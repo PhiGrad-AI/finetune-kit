@@ -119,7 +119,7 @@ class Loaded:
     train: list[dict]
     val: list[dict] | None
     test: list[dict] | None
-    origin: dict[str, str]
+    spec: str
     ignored_splits: list[str]
     test_unlabelled: bool
 
@@ -146,13 +146,16 @@ def _first_line(e: Exception) -> str:
     return lines[0].strip() if lines else type(e).__name__
 
 
-def _resolve_revision(repo_id: str, revision: str | None) -> str:
+def _resolve_revision(repo_id: str, revision: str | None, config: str | None = None) -> str:
     try:
         from huggingface_hub import HfApi
 
-        return HfApi().dataset_info(repo_id, revision=revision).sha
+        sha = HfApi().dataset_info(repo_id, revision=revision).sha
     except Exception as e:
-        raise ValueError(f"could not load {_spec(repo_id, None)}: {_first_line(e)}") from e
+        raise ValueError(f"could not load {_spec(repo_id, config)}: {_first_line(e)}") from e
+    if not sha:
+        raise ValueError(f"could not resolve a revision for {_spec(repo_id, config)}")
+    return sha
 
 
 def _load_dataset(repo_id: str, config: str | None, revision: str) -> dict[str, tuple[list[dict], dict]]:
@@ -217,7 +220,7 @@ def load_hf(spec: str, revision: str, task: str, columns: dict) -> Loaded:
         train=out["train"],
         val=out["val"],
         test=out["test"],
-        origin={role: "published" for role in picked},
+        spec=spec,
         ignored_splits=[n for n in raw if n not in used],
         test_unlabelled=unlabelled,
     )
@@ -239,24 +242,74 @@ def resolve_splits(loaded: Loaded, task: str, val_frac: float) -> tuple[list, li
     """Return train, val, test and split_origin, carving missing parts from train, then validate."""
     train, val, test = loaded.train, loaded.val, loaded.test
     origin = {"train": "published", "val": "published", "test": "published"}
-    test_missing = test is None
+    val_missing = not val  # an empty published split counts as missing
+    test_missing = not test
     carve_test = test_missing or loaded.test_unlabelled
-    if val is None and carve_test:
+    test_origin = (
+        "carved from train (no published test split)"
+        if test_missing
+        else "carved from train (published test has no labels)"
+    )
+    if val_missing and carve_test:
         train, val, test = data.make_splits(train, task, frac=(1 - 0.1 - val_frac, val_frac, 0.1))
         origin["val"] = "carved from train"
-        origin["test"] = (
-            "carved from train" if test_missing else "carved from train (published test has no labels)"
-        )
-    elif val is None:
+        origin["test"] = test_origin
+    elif val_missing:
         train, val, _ = data.make_splits(train, task, frac=(1 - val_frac, val_frac, 0))
         origin["val"] = "carved from train"
     elif carve_test:
         train, _, test = data.make_splits(train, task, frac=(0.9, 0, 0.1))
-        origin["test"] = (
-            "carved from train (no published test split)"
-            if test_missing
-            else "carved from train (published test has no labels)"
-        )
+        origin["test"] = test_origin
     for role, rows in (("train", train), ("val", val), ("test", test)):
-        data.validate_rows(rows, task, f"Hugging Face {role} split")
+        data.validate_rows(rows, task, f"{loaded.spec} {role}")
     return train, val, test, origin
+
+
+def _local_path(root: Path, p: str) -> Path:
+    path = Path(p)
+    return path if path.is_absolute() else Path(root) / path
+
+
+@dataclass
+class Resolved:
+    train: list[dict]
+    val: list[dict]
+    test: list[dict]
+    origin: dict[str, str]
+    ignored_splits: list[str]
+
+
+def resolve_source(cfg_data, root: Path, task: str, val_frac: float) -> Resolved:
+    """Train, val, test, split origin and ignored HF splits for the experiment's configured data."""
+    cols = cfg_data.columns
+    if cfg_data.source:
+        if not cfg_data.revision:
+            raise ValueError(f"{cfg_data.source} has no pinned revision in experiment.yaml")
+        loaded = load_hf(cfg_data.source, cfg_data.revision, task, cols)
+        return Resolved(*resolve_splits(loaded, task, val_frac), loaded.ignored_splits)
+    train = data.load_rows(_local_path(root, cfg_data.train), task, cols, "train")
+    if cfg_data.val and cfg_data.test:
+        val = data.load_rows(_local_path(root, cfg_data.val), task, cols, "val")
+        test = data.load_rows(_local_path(root, cfg_data.test), task, cols, "test")
+        return Resolved(train, val, test, dict.fromkeys(("train", "val", "test"), "provided"), [])
+    train, val, test = data.make_splits(train, task, frac=(1 - 0.1 - val_frac, val_frac, 0.1))
+    origin = {"train": "provided", "val": "carved from train", "test": "carved from train"}
+    return Resolved(train, val, test, origin, [])
+
+
+def load_source(cfg_data, root: Path, task: str, val_frac: float) -> tuple[list, list, list, dict]:
+    r = resolve_source(cfg_data, root, task, val_frac)
+    return r.train, r.val, r.test, r.origin
+
+
+def load_train(cfg_data, root: Path, task: str) -> list[dict]:
+    """Train rows as the experiment will see them (named labels for HF ClassLabel columns)."""
+    if cfg_data.source:
+        return load_source(cfg_data, root, task, 0.1)[0]
+    return data.load_rows(_local_path(root, cfg_data.train), task, cfg_data.columns, "train")
+
+
+def pin_revision(spec: str, revision: str | None) -> str:
+    """Commit sha for `spec` at `revision` (branch, tag, sha or None for the default branch)."""
+    repo_id, config = parse_hf(spec)
+    return _resolve_revision(repo_id, revision, config)
