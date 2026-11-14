@@ -237,12 +237,22 @@ def _mark_failed(exp_dir: Path, run_id: str, error: str) -> None:
         return
     if req.get("status") in store.TERMINAL:
         return
-    req.update(status="crash", error=error)
+    if req.get("status") == "finalizing":  # seeds finished; keep their outcome, don't force crash
+        req["status"] = req.pop("outcome", "crash")
+    else:
+        req.update(status="crash", error=error)
     try:
         _finalize(exp_dir, req, req.get("seed_status") or [])
     except Exception:
         try:
-            req["verdict"] = "discard" if req["stage"] == "research" else "crash"
+            finalized = ex.load(exp_dir)[2].finalized
+        except Exception:
+            finalized = {}
+        fallback = "discard" if req["stage"] == "research" else "crash"
+        req["verdict"] = finalized.get(run_id, fallback)
+        req.setdefault("error", error)
+        req.pop("outcome", None)
+        try:
             store.write_request(exp_dir, run_id, req)
         except Exception:
             pass
@@ -278,20 +288,33 @@ def _count_lines(p: Path) -> int:
 
 
 def _precheck(exp_dir: Path, req: dict) -> str | None:
-    """Re-check at execution time what `finetune-kit run` checked at enqueue time."""
+    """Re-check at execution time what `finetune-kit run` checked at enqueue time.
+
+    request.json is agent-reachable, so what will execute (stage, overrides, seeds) must hash to
+    the value recorded in state at enqueue; research overrides are also re-validated.
+    """
     try:
         ex.verify_checksums(exp_dir, store.project_root(exp_dir))
     except ex.TamperError as e:
         return f"refused at execution: {e}"
+    cfg, space, state = ex.load(exp_dir)
+    if state.request_hashes.get(req["run_id"]) != store.request_hash(req):
+        return "refused at execution: request.json was modified after enqueue"
     if req["stage"] != "research":
         return None
-    cfg, space, state = ex.load(exp_dir)
     if space is None:
         return "refused at execution: no search space committed"
     profile = store.profile_for(cfg, {}, store.project_root(exp_dir))
-    config = req.get("config", req.get("overrides") or {})
+    overrides = dict(req.get("overrides") or {})
+    agent = req.get("config") or {}
+    if "lr" in overrides:
+        lr = overrides["lr"]
+        if lr != agent.get("lr", state.lr_scan_best):
+            return f"refused at execution: lr {lr!r} is neither the configured value nor the LR-scan result"
+        if "lr" not in agent:
+            overrides.pop("lr")  # added by the CLI from the LR scan, not chosen by the agent
     errs = validate_config(
-        config, space.tunable, space.losses, store.effective_defaults(cfg, state, profile), cfg.task, profile,
+        overrides, space.tunable, space.losses, store.effective_defaults(cfg, state, profile), cfg.task, profile,
     )
     return "refused at execution: " + "; ".join(errs) if errs else None
 

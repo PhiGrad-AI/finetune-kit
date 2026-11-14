@@ -81,6 +81,7 @@ class State(BaseModel):
     bakeoff: dict | None = None
     model_locked: bool = False
     finalized: dict[str, str] = Field(default_factory=dict)  # run_id -> verdict, written by the worker
+    request_hashes: dict[str, str] = Field(default_factory=dict)  # run_id -> sha256 at enqueue
 
 
 def _slug(name: str) -> str:

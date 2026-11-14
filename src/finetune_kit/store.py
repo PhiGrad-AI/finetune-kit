@@ -1,4 +1,5 @@
 """Run directories, request files, results.tsv and run summaries."""
+import hashlib
 import json
 import os
 import re
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 import finetune_kit
-from finetune_kit.experiment import ExperimentConfig, MetricRef, State, load
+from finetune_kit.experiment import ExperimentConfig, MetricRef, State, load, save_state, state_lock
 from finetune_kit.profiles import ModelProfile, load_profiles
 from finetune_kit.stats import RunSummary
 from finetune_kit.train.config import defaults_for, nondefault_count
@@ -72,6 +73,20 @@ def new_run(
     *, extra: dict | None = None,
 ) -> str:
     exp_dir = Path(exp_dir)
+    with state_lock(exp_dir):
+        return _new_run(exp_dir, stage, overrides, seeds, description, extra)
+
+
+def request_hash(req: dict) -> str:
+    """sha256 of the fields that decide what is executed (model is inside overrides)."""
+    blob = json.dumps(
+        {"stage": req.get("stage"), "overrides": req.get("overrides"), "seeds": req.get("seeds")},
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _new_run(exp_dir: Path, stage: str, overrides: dict, seeds: list[int], description: str, extra) -> str:
     runs = exp_dir / "runs"
     runs.mkdir(parents=True, exist_ok=True)
     _, _, state = load(exp_dir)
@@ -88,6 +103,8 @@ def new_run(
         "seeds": list(seeds), "description": description, "status": "queued",
         "created": now(), "retries": 0, **(extra or {}),
     }
+    state.request_hashes[run_id] = request_hash(req)
+    save_state(exp_dir, state)
     write_request(exp_dir, run_id, req)
     return run_id
 

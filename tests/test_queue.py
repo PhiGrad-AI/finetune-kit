@@ -629,3 +629,46 @@ def test_test_envs_need_testing_flag(exp, monkeypatch):  # minor 9
     calls = _mock_popen(monkeypatch)  # FINETUNE_KIT_NO_DAEMON=1 is still set, but ignored
     queue.enqueue(exp, store.new_run(exp, "noise", {}, [0], "a"))
     assert len(calls) == 1
+
+
+# --- fix round 2 -------------------------------------------------------------------------------
+
+
+def _edit_overrides(exp_dir, run_id, overrides):
+    p = exp_dir / "runs" / run_id / "request.json"
+    req = json.loads(p.read_text())
+    req["overrides"] = overrides
+    p.write_text(json.dumps(req))
+
+
+def test_edited_research_overrides_caught(exp_with_noise, runner):
+    rid = _out(_run(runner, exp_with_noise, {"dropout": 0.2}))["run_id"]
+    _inject(exp_with_noise, rid, [0.9, 0.9, 0.9])
+    _edit_overrides(exp_with_noise, rid, {"dropout": 0.2, "warmup": 0.3})
+    queue.worker_loop()
+    req = _request(exp_with_noise, rid)
+    assert req["status"] == "crash" and req["verdict"] == "discard"
+    assert "request.json was modified after enqueue" in req["error"]
+    assert not (exp_with_noise / "runs" / rid / "seed_0").exists()
+
+
+def test_edited_noise_overrides_caught(exp, runner):
+    rid = _out(_run(runner, exp, {}, "--stage", "noise"))["run_id"]
+    _inject(exp, rid, NOISE)
+    _edit_overrides(exp, rid, {"lr": 5e-4})
+    queue.worker_loop()
+    req = _request(exp, rid)
+    assert req["status"] == "crash" and "modified after enqueue" in req["error"]
+    assert ex.load(exp)[2].sigma_obj is None
+
+
+def test_mark_failed_restores_finalizing_outcome(exp_with_noise, runner):
+    rid = _research(runner, exp_with_noise, [0.75, 0.74, 0.76])
+    req = _request(exp_with_noise, rid)
+    req.update(status="finalizing", outcome="done")
+    req.pop("verdict")
+    (exp_with_noise / "runs" / rid / "request.json").write_text(json.dumps(req))
+    queue._mark_failed(exp_with_noise, rid, "boom")
+    req = _request(exp_with_noise, rid)
+    assert req["status"] == "done" and req["verdict"] == "keep" and "outcome" not in req
+    assert ex.load(exp_with_noise)[2].runs_used == 1
