@@ -318,3 +318,45 @@ def test_collate_pads():
     ids, mask, y = collate([[1, 2, 3], [4]], 0, "cpu", labels=[[9, 9, 9], [8]])
     assert ids.tolist() == [[1, 2, 3], [4, 0, 0]] and mask.sum().item() == 4
     assert y.tolist() == [[9, 9, 9], [8, -100, -100]]
+
+
+def test_bf16_autocast_skipped_on_mps_for_fp32_profiles(prof):  # final review 13
+    import contextlib
+    import dataclasses
+
+    from finetune_kit.train.loop import _autocast, runtime_config
+
+    bf16 = build_config({"precision": "bf16"}, prof, "seq-cls", 0)
+    fp32_prof = dataclasses.replace(prof, force_fp32_on_mps=True)
+    assert runtime_config(bf16, fp32_prof, "mps").precision == "fp32"
+    assert isinstance(_autocast("mps", runtime_config(bf16, fp32_prof, "mps")), contextlib.nullcontext)
+    assert runtime_config(bf16, fp32_prof, "cpu").precision == "bf16"
+    assert runtime_config(bf16, prof, "mps").precision == "bf16"
+
+
+def test_worker_label_map_uses_full_train_before_subset(tmp_path, monkeypatch, prof):  # final review 3
+    from finetune_kit import experiment as ex
+    from finetune_kit.data import freeze_splits
+    from finetune_kit.train import loop, worker
+
+    monkeypatch.setenv("FINETUNE_KIT_HOME", str(tmp_path / "home"))
+    cfg = ex.ExperimentConfig(
+        name="w", task="seq-cls", model="tiny-bert", data=ex.DataPaths(train="x"),
+        objective=ex.MetricRef(metric="macro_f1"), research_subset=5,
+    )
+    d = ex.new_experiment(tmp_path, "w", cfg)
+    train = [{"id": i, "text": f"t{i}", "label": "a" if i < 10 else "b"} for i in range(19)]
+    train.append({"id": 99, "text": "rare", "label": "rare"})
+    val = [{"id": f"v{i}", "text": f"v{i}", "label": l} for i, l in enumerate(["a", "b", "rare"])]
+    freeze_splits(d, cfg.uid, train, val, val)
+    seen = {}
+
+    def fake_train(cfg, profile, train_rows, val_rows, labels, *a, **k):
+        seen.update(labels=labels, n=len(train_rows))
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(loop, "train_and_predict", fake_train)
+    req = {"run_id": "r001", "stage": "research", "overrides": {}, "seeds": [0]}
+    with pytest.raises(RuntimeError, match="stop"):
+        worker._real(d, req, 0, tmp_path)
+    assert seen == {"labels": ["a", "b", "rare"], "n": 5}

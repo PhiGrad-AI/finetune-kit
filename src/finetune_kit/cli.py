@@ -116,6 +116,7 @@ def run(
                     )
                 if _requests(exp_dir, "lr-scan", pending_only=True):
                     raise ValueError("an LR scan is still pending; wait for it before measuring the noise floor")
+                _refuse_while_bakeoff_pending(exp_dir, "measuring the noise floor")
                 if agent_config:
                     warnings.append(
                         "noise stage uses the default config; ignored keys: " + ", ".join(sorted(agent_config))
@@ -180,6 +181,7 @@ def lr_scan(exp: str = typer.Argument(..., help="Experiment: number, name or pat
                     f"the noise floor ({noise[0]['run_id']}) already fixed the default LR; an LR scan is "
                     "only possible before it — start a new experiment to rescan"
                 )
+            _refuse_while_bakeoff_pending(exp_dir, "an LR scan")
             profile = store.profile_for(cfg, {}, store.project_root(exp_dir))
             lo, hi = profile.lr_range
             lrs = [float(f"{lo * (hi / lo) ** (i / 4):.3g}") for i in range(5)]
@@ -187,7 +189,7 @@ def lr_scan(exp: str = typer.Argument(..., help="Experiment: number, name or pat
             ids = [
                 store.new_run(
                     exp_dir, "lr-scan", {"lr": lr, "step_fraction": 0.2}, [0], f"lr scan {lr:g}",
-                    extra={"scan_id": scan_id},
+                    extra={"scan_id": scan_id, "model": profile.key},
                 )
                 for lr in lrs
             ]
@@ -219,6 +221,14 @@ def bakeoff(
                 profile = store.profile_for(cfg, {"model": args[2]}, store.project_root(exp_dir))
                 if cfg.task not in profile.tasks:
                     raise ValueError(f"model {profile.key!r} does not support {cfg.task}")
+                scanned = {r.get("model", cfg.model) for r in _requests(exp_dir, "lr-scan", skip_failed=True)}
+                if scanned - {profile.key}:
+                    raise ValueError(
+                        f"an LR scan already ran for {', '.join(sorted(scanned))}; its LR does not carry over "
+                        f"to {profile.key!r} — start a new experiment to choose it"
+                    )
+                if profile.key not in scanned:
+                    state.lr_scan_best = None  # never carry an LR found for another model
                 cfg.model = profile.key
                 cfg.versions["model_revision"] = profile.revision
                 ex._dump_yaml(exp_dir / "experiment.yaml", cfg)
@@ -258,6 +268,11 @@ def bakeoff(
         for rid in ids:
             queue.enqueue(exp_dir, rid)
     emit({"run_ids": ids, "models": keys, "status": "queued"})
+
+
+def _refuse_while_bakeoff_pending(exp_dir: Path, what: str) -> None:
+    if _requests(exp_dir, "bakeoff", pending_only=True):
+        raise ValueError(f"a bake-off is still pending; wait for it and choose a model before {what}")
 
 
 def _wait_payload(exp_dir: Path, req: dict) -> dict:

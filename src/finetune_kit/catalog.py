@@ -1,4 +1,5 @@
 """Hyperparameter catalog: hard limits, recommendations and config validation."""
+import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -144,6 +145,9 @@ def validate_config(
                 pass
             elif not _is_number(val):
                 errs.append(f"{key}: expected a number, got {val!r}")
+                continue
+            elif not math.isfinite(val):
+                errs.append(f"{key}: expected a finite number, got {val!r}")
                 continue
             elif e.kind == "int" and val != int(val):
                 errs.append(f"{key}: expected a whole number, got {val!r}")

@@ -723,3 +723,26 @@ def test_wait_has_no_error_key_on_success(exp_with_noise, runner):  # final revi
     rid = _research(runner, exp_with_noise, [0.75, 0.74, 0.76])
     out = _out(runner.invoke(app, ["wait", rid, "--exp", exp_with_noise.name, "--timeout", "1"]))
     assert out["status"] == "done" and "error" not in out
+
+
+def test_noise_and_lr_scan_refused_while_bakeoff_pending(exp, runner):  # final review 12
+    assert runner.invoke(app, ["bakeoff", exp.name, "--models", "tiny-bert,tiny-roberta"]).exit_code == 0
+    r = _run(runner, exp, {}, "--stage", "noise")
+    assert r.exit_code == 2 and "bake-off" in _out(r)["error"]
+    r = runner.invoke(app, ["lr-scan", exp.name])
+    assert r.exit_code == 2 and "bake-off" in _out(r)["error"]
+
+
+def test_bakeoff_choose_resets_lr_scan_best(exp, runner):  # final review 12
+    st = ex.load(exp)[2]
+    st.lr_scan_best = 3e-4
+    ex.save_state(exp, st)
+    assert runner.invoke(app, ["bakeoff", "choose", exp.name, "tiny-roberta"]).exit_code == 0
+    assert ex.load(exp)[2].lr_scan_best is None
+
+
+def test_bakeoff_choose_refused_after_lr_scan_for_other_model(exp, runner):  # final review 12
+    assert runner.invoke(app, ["lr-scan", exp.name]).exit_code == 0  # scans tiny-bert
+    r = runner.invoke(app, ["bakeoff", "choose", exp.name, "tiny-roberta"])
+    assert r.exit_code == 2 and "LR scan" in _out(r)["error"] and "tiny-bert" in _out(r)["error"]
+    assert ex.load(exp)[0].model == "tiny-bert" and not ex.load(exp)[2].model_locked

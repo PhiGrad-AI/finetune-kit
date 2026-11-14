@@ -117,9 +117,9 @@ def _real(exp_dir: Path, request: dict, seed: int, seed_dir: Path) -> None:
 
     train_rows = load_rows(exp_dir / "splits" / "train.jsonl", task)
     val_rows = load_rows(exp_dir / "splits" / "val.jsonl", task)
+    labels = label_map(train_rows, task)  # full train: a subset can drop a rare class (as promote does)
     if exp.research_subset and request.get("stage") in SUBSET_STAGES:
         train_rows = subset(train_rows, exp.research_subset, 0)
-    labels = label_map(train_rows, task)
     pos = positive_index(exp, labels)
     truth = truth_for(task, labels, val_rows, "val")
     obj_m = _metric(exp, exp.objective, exp_dir)

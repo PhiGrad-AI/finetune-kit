@@ -203,3 +203,12 @@ def test_add_profile_refuses_existing_key(tmp_path):
     add_profile(tmp_path, "acme/mine", False, config=cfg)
     with pytest.raises(ValueError, match="'mine' already exists"):
         add_profile(tmp_path, "other/mine", False, config=cfg)  # project
+
+
+def test_validate_config_rejects_non_finite_numbers():
+    import math
+
+    tunable = ["lr", "warmup", "msd_samples"]
+    for key, val in (("lr", math.inf), ("warmup", math.nan), ("msd_samples", math.inf), ("lr", -math.inf)):
+        errs = validate_config({key: val}, tunable, ["ce"], DEFAULTS, "seq-cls")
+        assert errs and "finite" in errs[0], (key, val, errs)

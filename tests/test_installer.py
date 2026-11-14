@@ -301,3 +301,11 @@ def test_cursor_command_frontmatter_parses(tmp_path):
     installer.install(tmp_path, "cursor", force=False)
     fm = _frontmatter((tmp_path / ".cursor/commands/finetune-kit.research.md").read_text())
     assert fm["description"] == installer.DESCRIPTIONS["research"]
+
+
+@pytest.mark.parametrize("settings", [{"hooks": []}, {"hooks": {"PreToolUse": {}}}, {"hooks": {"PreToolUse": [{"hooks": 5}]}}])
+def test_init_rejects_malformed_settings_shapes(tmp_path, settings):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text(json.dumps(settings))
+    with pytest.raises(ValueError, match="settings.json"):
+        installer.install(tmp_path, "claude", force=False)
