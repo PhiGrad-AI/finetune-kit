@@ -48,17 +48,41 @@ experiment. Then ask, in this order:
    - **Token classification** (`token-cls`): a tag for each word, for example finding names,
      addresses or other entities in text (NER).
 
-   Then tell them the data format it needs, as JSONL (one JSON object per line):
+   Then tell them the data format it needs. Files can be JSONL (one JSON object per line, shown
+   below), CSV, TSV or Parquet with a column for each field (mapped in step 2):
    - seq-cls: `{"id": ..., "text": "...", "label": ...}` (label is a number or a string)
    - token-cls: `{"id": ..., "tokens": ["...", ...], "tags": ["B-PER", "O", ...]}` (BIO or BIOES tags)
    - optional `"group_id"` on every row (for example the source document) keeps related rows in
      the same split, so near-copies cannot leak from training into validation.
 
-2. **Data.** Ask for the path to the data: either one file (finetune-kit splits it 80/10/10
-   into train / validation / test) or three files (train, validation, test; give both validation
-   and test, or neither). Explain in one line that the test part is locked away and scored only
-   once, at the very end. You may check that the files exist (`ls`) and count rows
-   (`wc -l <file>`), but do not open them.
+2. **Data.** Ask where the data comes from, offering three options:
+   - (a) **one file**: finetune-kit splits it 80/10/10 into train / validation / test;
+   - (b) **three files**: train, validation and test (give both validation and test, or neither);
+   - (c) a **Hugging Face dataset id**, for example `imdb` or `user/dataset` (optionally with a
+     config name, `hf:<id>:<config>`, and a revision).
+
+   Accepted file formats: `.jsonl`, `.csv`, `.tsv`, `.parquet`. CSV and TSV work for sequence
+   classification only. Explain in one line that the test part is locked away and scored only
+   once, at the very end. For a Hugging Face dataset, say that its published train / validation /
+   test splits are used as they are, and that a validation or test split that is missing,
+   empty or unlabelled is carved out of train instead. Private or gated datasets use the user's
+   existing Hugging Face login (`hf auth login` or `huggingface-cli login`); never ask for a
+   token. You may check that files exist (`ls`) and count rows (`wc -l <file>`), but do not open
+   them.
+
+   Then run `finetune-kit inspect-data` with the same data. The tool looks at the data so you
+   do not have to; it prints only counts, column names and label values, never row text:
+   - files: `finetune-kit inspect-data --train <path> [--val <path> --test <path>]`
+   - Hugging Face: `finetune-kit inspect-data --source hf:<id>[:<config>] [--revision <rev>]`
+
+   Its JSON has `splits` (row counts and role), `columns` (name and type), `label_candidates`
+   (columns that look like labels, with their distinct values), `suggested_columns` and
+   `tasks_possible`. Show the user, in plain words: the splits and row counts, the columns, and
+   the label values. If the chosen task is not in `tasks_possible`, say so and go back to
+   question 1. Then ask one question: propose the `suggested_columns` mapping (which column is
+   the text, which is the label, and so on) and ask them to confirm or correct it. Keep the
+   confirmed mapping for step 10. An error from `inspect-data` (a missing file, an unknown
+   dataset, a login needed) is explained and fixed with the user before you go on.
 
 3. **Model.** Run `finetune-kit models --task <task>`. Show each model on one line: its `key`,
    the Hugging Face id, default learning rate (`lr_default`), max length in tokens (`max_len`)
@@ -116,12 +140,18 @@ experiment. Then ask, in this order:
 10. **Create.** Run:
 
     ```
-    finetune-kit new <name> --task <task> --model <model key> --train <path>
-        [--val <path> --test <path>] --metric <metric> [--metric-params '<json>']
+    finetune-kit new <name> --task <task> --model <model key>
+        (--train <path> [--val <path> --test <path>] | --source hf:<id>[:<config>] [--revision <rev>])
+        [--columns '{"text": "<col>", "label": "<col>"}'] --metric <metric> [--metric-params '<json>']
         [--guardrail <metric> --guardrail-params '<json>'] [--positive-class <label>]
         [--custom-metric <path:func> --direction max|min]
         --seeds <N> --max-runs <runs> --max-hours <hours> [--subset <rows>]
     ```
+
+    `--columns` takes the confirmed mapping from step 2 as JSON (keys `text`, `label`, `id`,
+    `tokens`, `tags`, `group_id`); leave it out when the column names already match. With
+    `--source`, finetune-kit pins the dataset's exact revision at this point, so later stages use
+    the same data.
 
     `--metric-params` takes only the params the user changed, e.g. `'{"recall": 0.99}'`.
     The JSON reply has `experiment` (the folder name) and `path`. If it is an error (for example
