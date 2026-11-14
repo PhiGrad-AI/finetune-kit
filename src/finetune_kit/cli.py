@@ -275,6 +275,8 @@ def _wait_payload(exp_dir: Path, req: dict) -> dict:
     out = {"run_id": req["run_id"], "status": req["status"], "stage": req["stage"], "seeds": seeds}
     if "verdict" in req:
         out["verdict"] = req["verdict"]
+    if "promote" in req:
+        out["promote"] = req["promote"]
     return out
 
 
@@ -498,6 +500,22 @@ def report(exp: str = typer.Argument(..., help="Experiment: number, name or path
     with _errors():
         path = rep.write_report(_exp(exp))
     emit({"path": str(path)})
+
+
+@app.command()
+def promote(
+    exp: str = typer.Argument(..., help="Experiment: number, name or path."),
+    run_id: str = typer.Argument(..., help="A keep / keep-simpler run, or the noise run."),
+    seeds: int = typer.Option(3, "--seeds", help="Seeds for the final retrain on the full train split."),
+) -> None:
+    """Queue the final retrain; when it finishes the test split is scored once and final/ is written.
+
+    Returns at once; `finetune-kit wait RUN --exp EXP` prints test metrics, threshold and throughput.
+    """
+    from finetune_kit import promote as pr
+
+    with _errors():
+        emit(pr.promote(_exp(exp), run_id, seeds))
 
 
 @app.command("_worker", hidden=True)

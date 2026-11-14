@@ -60,6 +60,47 @@ def _fake(request: dict, seed: int, seed_dir: Path) -> None:
     _write_metrics(seed_dir, out)
 
 
+def positive_index(exp: ExperimentConfig, labels: list[str]) -> int:
+    if exp.positive_class is None:
+        return 1 if len(labels) > 1 else 0
+    if exp.positive_class not in labels:
+        raise ValueError(f"positive_class {exp.positive_class!r} not in labels {labels}")
+    return labels.index(exp.positive_class)
+
+
+def truth_for(task: str, labels: list[str], rows: list[dict], split: str):
+    """Class indices (seq-cls) or tag lists (token-cls) of `rows`."""
+    if task != "seq-cls":
+        return [r["tags"] for r in rows]
+    idx = {l: i for i, l in enumerate(labels)}
+    unseen = sorted({str(r["label"]) for r in rows} - set(idx))
+    if unseen:
+        raise ValueError(f"{split} labels not present in train: {unseen}")
+    return [idx[str(r["label"])] for r in rows]
+
+
+def score_all(exp: ExperimentConfig, exp_dir: Path, labels: list[str], pos: int, truth, out) -> dict:
+    """Objective, guardrail and every applicable built-in metric of predictions `out`."""
+    task = exp.task
+    obj_m = _metric(exp, exp.objective, exp_dir)
+    guard_m = _metric(exp, exp.guardrail, exp_dir) if exp.guardrail else None
+    objective = _score(obj_m, exp.objective.params, task, truth, out, pos)
+    guardrail = _score(guard_m, exp.guardrail.params, task, truth, out, pos) if guard_m else None
+    report, report_errors = {}, {}
+    for m in metrics.list_for(task):
+        if m.needs_positive and len(labels) > 2:
+            continue
+        try:
+            report[m.name] = _num(_score(m, {}, task, truth, out, pos))
+        except (ValueError, IndexError) as e:  # not applicable, e.g. val without positives; others are bugs
+            report[m.name] = None
+            report_errors[m.name] = str(e)
+    return {
+        "objective": _num(objective), "guardrail": _num(guardrail), "report": report,
+        "report_errors": report_errors,
+    }
+
+
 def _real(exp_dir: Path, request: dict, seed: int, seed_dir: Path) -> None:
     from finetune_kit.train.loop import pick_device, train_and_predict
 
@@ -72,30 +113,18 @@ def _real(exp_dir: Path, request: dict, seed: int, seed_dir: Path) -> None:
         raise ValueError(f"unknown model profile {model_key!r}")
     profile = profiles[model_key]
     cfg = build_config(overrides, profile, task, seed)
+    promote = request.get("stage") == "promote"
 
     train_rows = load_rows(exp_dir / "splits" / "train.jsonl", task)
     val_rows = load_rows(exp_dir / "splits" / "val.jsonl", task)
     if exp.research_subset and request.get("stage") in SUBSET_STAGES:
         train_rows = subset(train_rows, exp.research_subset, 0)
     labels = label_map(train_rows, task)
-
-    pos = 1 if len(labels) > 1 else 0
-    if exp.positive_class is not None:
-        if exp.positive_class not in labels:
-            raise ValueError(f"positive_class {exp.positive_class!r} not in labels {labels}")
-        pos = labels.index(exp.positive_class)
-
-    if task == "seq-cls":
-        idx = {l: i for i, l in enumerate(labels)}
-        unseen = sorted({str(r["label"]) for r in val_rows} - set(idx))
-        if unseen:
-            raise ValueError(f"val labels not present in train: {unseen}")
-        truth = [idx[str(r["label"])] for r in val_rows]
-    else:
-        truth = [r["tags"] for r in val_rows]
-
+    pos = positive_index(exp, labels)
+    truth = truth_for(task, labels, val_rows, "val")
     obj_m = _metric(exp, exp.objective, exp_dir)
-    guard_m = _metric(exp, exp.guardrail, exp_dir) if exp.guardrail else None
+    if exp.guardrail:
+        _metric(exp, exp.guardrail, exp_dir)  # fail before training, not after
 
     def select(out):
         return _score(obj_m, exp.objective.params, task, truth, out, pos)
@@ -103,32 +132,22 @@ def _real(exp_dir: Path, request: dict, seed: int, seed_dir: Path) -> None:
     device = pick_device()
     res = train_and_predict(
         cfg, profile, train_rows, val_rows, labels, select, device,
-        direction=obj_m.direction, pos=pos,
+        keep_model=promote, direction=obj_m.direction, pos=pos,
     )
-    objective = select(res.val_out)
-    guardrail = (
-        _score(guard_m, exp.guardrail.params, task, truth, res.val_out, pos) if guard_m else None
-    )
-    report, report_errors = {}, {}
-    for m in metrics.list_for(task):
-        if m.needs_positive and len(labels) > 2:
-            continue
-        try:
-            report[m.name] = _num(_score(m, {}, task, truth, res.val_out, pos))
-        except (ValueError, IndexError) as e:  # not applicable, e.g. val without positives; others are bugs
-            report[m.name] = None
-            report_errors[m.name] = str(e)
     out = {
-        "objective": _num(objective), "guardrail": _num(guardrail), "report": report,
-        "report_errors": report_errors,
+        **score_all(exp, exp_dir, labels, pos, truth, res.val_out),
         "train_s": res.train_s, "peak_gb": res.peak_gb, "n_truncated": res.n_truncated,
-        "best_epoch": res.best_epoch, "device": device,
+        "best_epoch": res.best_epoch, "device": device, "n_train": len(train_rows),
     }
     # preds first; metrics.json is the completion marker, so it is written last and atomically
     if task == "seq-cls":
         np.save(seed_dir / "val_preds.npy", res.val_out)
     else:
         (seed_dir / "val_preds.json").write_text(json.dumps(res.val_out))
+    if promote:
+        from finetune_kit.promote import save_model
+
+        save_model(res.model, profile, seed_dir / "model")
     _write_metrics(seed_dir, out)
 
 

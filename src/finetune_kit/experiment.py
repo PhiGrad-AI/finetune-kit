@@ -78,6 +78,7 @@ class State(BaseModel):
     runs_used: int = 0
     hours_used: float = 0
     promoted: bool = False
+    promote_pending: str | None = None  # run id of a queued/running promote (one at a time)
     bakeoff: dict | None = None
     model_locked: bool = False
     finalized: dict[str, str] = Field(default_factory=dict)  # run_id -> verdict, written by the worker

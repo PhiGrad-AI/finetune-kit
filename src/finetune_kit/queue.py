@@ -439,6 +439,10 @@ def _finalize(exp_dir: Path, req: dict, seeds_out: list[dict]) -> None:
             _finish_lr_scan(exp_dir, req, direction)
         elif stage == "bakeoff":
             _finish_bakeoff(exp_dir, req, direction, min_delta)
+        elif stage == "promote":
+            from finetune_kit import promote  # lazy: pulls in torch
+
+            req["promote"] = promote.finish(exp_dir, req)
 
         if run_id not in store.result_run_ids(exp_dir):
             desc = req.get("description", "")
