@@ -142,21 +142,25 @@ MPS, gradient checkpointing, remote code), dropout config keys and LoRA targets.
 To add a model: `finetune-kit models add <hf_id> [--trust-remote-code]` writes a generic profile
 into `.finetune-kit/models.yaml` (it reads only `config.json`). Unknown models get a generic
 profile, so run the LR scan before trusting the default LR. Edit `.finetune-kit/models.yaml` to
-refine it. Remote-code models are allowed only from shipped profiles or when you add them
-explicitly with `--trust-remote-code`.
+refine it. An entry there for a shipped key overrides only the fields it lists (for example
+`roberta-base: {lr_default: 3e-5}`); a new key must list every required field. `models add`
+refuses a key that already exists. Remote-code models are allowed only from shipped profiles or
+when you add them explicitly with `--trust-remote-code`.
 
 ## Trust and safety
 
 - **Test isolation.** `check-data` moves the test split to the vault outside the project and keeps
   only its hash and row count. Only `promote` reads it, once. `misses` reads validation only.
-- **Tamper checks.** A checksum of `research-rules.md`, `search-space.yaml` and the train/val
-  splits is recorded at baseline and verified on every `finetune-kit run`; a mismatch refuses the
-  run. The search space must match its last commit.
+- **Tamper checks.** Checksums of `research-rules.md` and the train/val splits (recorded by
+  `check-data`), `search-space.yaml` (at each commit), and `experiment.yaml` and the resolved model
+  profile (at the first noise run) are verified on every `finetune-kit run`, again when a run
+  starts, and at `promote`; a mismatch refuses the run, and `wait` reports the refusal. `init
+  --force` replaces an edited `research-rules.md`, so existing experiments then fail this check.
 - **Enforced by the CLI, not the agent:** search-space and hard-limit validation, seeds per run,
   budget, run timeout (3x baseline), and the keep verdict.
 - **Guard hook (Claude Code only).** `init --ai claude` installs a `PreToolUse` hook that blocks
-  edits to the locked files (rules, splits, search space, state, results, runs, `final/`). Codex
-  and Cursor get the rules in text only, with no hook.
+  edits to the locked files (rules, splits, search space, `experiment.yaml`, `data-report.json`,
+  state, results, runs, `final/`). Codex and Cursor get the rules in text only, with no hook.
 - **Limits.** A determined agent outside Claude Code could still edit state files directly or read
   `~/.finetune-kit/`. The tamper checks catch edits to protected files at the next `run`, but not
   every state file. Review `results.tsv` and `log.md` as you would any agent's work.

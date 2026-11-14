@@ -543,7 +543,11 @@ def init(
     project: Optional[str] = typer.Argument(None, help="New project directory (default: the current one)."),
     ai: str = typer.Option(..., "--ai", help="claude | codex | cursor"),
     here: bool = typer.Option(False, "--here", help="Install into the current directory."),
-    force: bool = typer.Option(False, "--force", help="Also replace an edited .finetune-kit/memory/research-rules.md."),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Also replace an edited .finetune-kit/memory/research-rules.md. Existing experiments "
+        "then fail their tamper check (the rules are checksummed at baseline).",
+    ),
 ) -> None:
     """Install the finetune-kit stage commands, rules and templates for a coding agent."""
     from finetune_kit import installer
