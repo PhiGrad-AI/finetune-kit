@@ -270,13 +270,13 @@ def test_worker_records_metric_value_errors(tmp_exp):
     d = yaml.safe_load(p.read_text())
     d["guardrail"] = None  # a failing guardrail is fatal; this test is about report metrics
     p.write_text(yaml.safe_dump(d))
-    # single-class val: roc_auc raises ValueError in sklearn -> recorded, not dropped
+    # val without positives: recall-constrained metrics cannot be computed -> recorded, not dropped
     rows = [r for r in _seq(40, 2, 1) if r["label"] == "0"][:8]
     freeze_splits(tmp_exp, "uid-x", _seq(40, 2, 0), rows, _seq(8, 2, 2))
     rd = _request(tmp_exp)
     assert worker.main(["--exp", str(tmp_exp), "--run", "r1", "--seed", "0"]) == 0
     m = json.loads((rd / "seed_0" / "metrics.json").read_text())
-    assert m["report"]["roc_auc"] is None and "roc_auc" in m["report_errors"]
+    assert m["report"]["pauc_hi"] is None and "pauc_hi" in m["report_errors"]
     assert "accuracy" in m["report"] and m["report"]["accuracy"] is not None
 
 
