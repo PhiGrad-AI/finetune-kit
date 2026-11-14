@@ -348,7 +348,7 @@ def test_inspect_choice_errors(tmp_path):
 def test_inspect_never_prints_second_text_column(tmp_path):
     long_rep = "SENTINEL-REPEATED-" + "x" * 40  # > 40 chars, low cardinality
     rows = [
-        {"text": f"a fairly long sentence number {i} with words", "label": "spam" if i % 2 else "ham",
+        {"text": f"a fairly long sentence number {i} with plenty of extra words so it is clearly the longest column here", "label": "spam" if i % 2 else "ham",
          "title": f"SENTINEL-UNIQUE-{i}", "ctx": long_rep, "short": f"S-{i % 3}"}
         for i in range(12)
     ]
@@ -359,6 +359,7 @@ def test_inspect_never_prints_second_text_column(tmp_path):
     assert "title" not in r["label_candidates"] and "ctx" not in r["label_candidates"]
     assert r["label_candidates"]["label"]["values"] == {"ham": 6, "spam": 6}
     assert r["suggested_columns"]["label"] == "label"
+    assert r["suggested_columns"]["text"] == "text"  # so ctx reaches the 40-character guard
 
 
 def test_inspect_id_column_is_not_text(hf_fake):
