@@ -89,6 +89,13 @@ def _epoch_len(label_ids: list[int], oversample: float) -> int:
     return len(epoch_order(label_ids, oversample, random.Random(0)))
 
 
+def runtime_config(cfg: TrainConfig, profile, device: str) -> TrainConfig:
+    """Profiles with force_fp32_on_mps run without bf16 autocast on MPS."""
+    if cfg.precision == "bf16" and device == "mps" and profile.force_fp32_on_mps:
+        return cfg.model_copy(update={"precision": "fp32"})
+    return cfg
+
+
 def _autocast(device: str, cfg: TrainConfig):
     if cfg.precision == "bf16":
         return torch.autocast(device_type=device, dtype=torch.bfloat16)
@@ -244,6 +251,7 @@ def train_and_predict(
         raise ValueError("fgm_eps needs trainable word embeddings (not with freeze_embed or lora_r)")
     from transformers import AutoTokenizer
 
+    cfg = runtime_config(cfg, profile, device)
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)

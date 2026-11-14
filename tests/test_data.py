@@ -201,3 +201,30 @@ def test_subset_stratified_and_noop():
     assert sum(r["label"] == "pos" for r in sub) == 10
     assert data.subset(rows, 5000, seed=0) == rows
     assert data.subset(rows, 100, seed=0) == sub
+
+
+@pytest.mark.parametrize("row, msg", [
+    ({"id": 1, "text": "", "label": "a"}, "text must be a non-empty string"),
+    ({"id": 1, "text": 5, "label": "a"}, "text must be a non-empty string"),
+    ({"id": 1, "text": "hi", "label": None}, "label must not be null"),
+])
+def test_load_rows_rejects_bad_seq_fields(tmp_path, row, msg):
+    p = tmp_path / "d.jsonl"
+    p.write_text(json.dumps({"id": 0, "text": "ok", "label": "a"}) + "\n" + json.dumps(row) + "\n")
+    with pytest.raises(DataError, match=f"d.jsonl line 2: {msg}"):
+        data.load_rows(p, "seq-cls")
+
+
+def test_load_rows_rejects_non_string_tokens(tmp_path):
+    p = tmp_path / "d.jsonl"
+    p.write_text(json.dumps({"id": 0, "tokens": ["a", 3], "tags": ["O", "O"]}) + "\n")
+    with pytest.raises(DataError, match="d.jsonl line 1: tokens must be a list of strings"):
+        data.load_rows(p, "token-cls")
+
+
+def test_load_rows_wraps_bad_utf8(tmp_path):
+    p = tmp_path / "d.jsonl"
+    p.write_bytes(json.dumps({"id": 0, "text": "ok", "label": "a"}).encode() + b"\n" + b'{"id": 1, "text": "\xff"}\n')
+    with pytest.raises(DataError, match="d.jsonl line 2: not valid UTF-8"):
+        data.load_rows(p, "seq-cls")
+

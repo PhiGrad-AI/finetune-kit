@@ -365,3 +365,8 @@ def test_check_data_resplit_refused_after_noise_run(runner, seq_jsonl, tmp_path)
     r = runner.invoke(app, ["check-data", "001", "--resplit"])
     assert r.exit_code == 2 and "splits are baselined; start a new experiment" in _out(r)["error"]
     assert ex.load(d)[2] == before and (d / "splits" / "train.jsonl").is_file()
+
+
+def test_new_requires_two_seeds(runner, seq_jsonl):
+    r = _new(runner, seq_jsonl, "--seeds", "1")
+    assert r.exit_code == 2 and "--seeds must be at least 2" in _out(r)["error"]

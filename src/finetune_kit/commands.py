@@ -51,6 +51,8 @@ def setup_experiment(
         raise ValueError(f"experiment name {name!r} has no letters or digits")
     if task not in ("seq-cls", "token-cls"):
         raise ValueError(f"--task must be seq-cls or token-cls, not {task!r}")
+    if seeds < 2:
+        raise ValueError("--seeds must be at least 2: the noise floor needs a standard deviation")
     if (val is None) != (test is None):
         raise ValueError("give both --val and --test, or neither (the kit then splits --train)")
     profiles = load_profiles(root)

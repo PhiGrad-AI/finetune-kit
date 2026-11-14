@@ -79,7 +79,15 @@ def _merge_settings(path: Path, written: list[Path]) -> None:
             raise ValueError(f"{path} is not valid JSON ({e}); fix it and run init again") from None
         if not isinstance(settings, dict):
             raise ValueError(f"{path} must hold a JSON object; fix it and run init again")
-    pre = settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
+    hooks = settings.setdefault("hooks", {})
+    pre = hooks.setdefault("PreToolUse", []) if isinstance(hooks, dict) else None
+    if not isinstance(pre, list) or any(
+        isinstance(e, dict) and not isinstance(e.get("hooks", []), list) for e in pre
+    ):
+        raise ValueError(
+            f"{path}: \"hooks\" must be an object whose \"PreToolUse\" is a list of "
+            "{\"matcher\", \"hooks\": [...]} entries; fix it and run init again"
+        )
     present = any(
         h.get("command") == GUARD_COMMAND
         for entry in pre if isinstance(entry, dict)

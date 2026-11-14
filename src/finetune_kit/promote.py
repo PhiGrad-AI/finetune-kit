@@ -341,12 +341,13 @@ def _score_test(exp_dir: Path, req: dict, ctx) -> dict:
     file, which a resumed finish (and any new promote request) treats as the test being used.
     """
     from finetune_kit.train import worker
-    from finetune_kit.train.loop import _predict, pick_device
+    from finetune_kit.train.loop import _predict, pick_device, runtime_config
 
     device = pick_device()
     _ensure_model(ctx, device)
     rows = data.read_test(ctx.exp.uid)
-    out = _predict(ctx.model, ctx.cfg, _encode_eval(ctx.tok, ctx.cfg, rows, ctx.labels), device)
+    cfg = runtime_config(ctx.cfg, ctx.profile, device)
+    out = _predict(ctx.model, cfg, _encode_eval(ctx.tok, cfg, rows, ctx.labels), device)
     truth = worker.truth_for(ctx.task, ctx.labels, rows, "test")
     scored = {
         "promote_run": req["run_id"], "source_run": req.get("source_run"), "seed": ctx.seed,

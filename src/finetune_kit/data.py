@@ -21,11 +21,15 @@ class DataError(ValueError):
 def load_rows(path: Path, task: str) -> list[dict]:
     path = Path(path)
     rows, seen = [], set()
-    with path.open() as f:
-        for n, line in enumerate(f, 1):
+    with path.open("rb") as f:
+        for n, raw in enumerate(f, 1):
+            where = f"{path.name} line {n}"
+            try:
+                line = raw.decode("utf-8")
+            except UnicodeDecodeError as e:
+                raise DataError(f"{where}: not valid UTF-8 ({e.reason})") from e
             if not line.strip():
                 continue
-            where = f"{path.name} line {n}"
             try:
                 row = json.loads(line)
             except json.JSONDecodeError as e:
@@ -36,9 +40,16 @@ def load_rows(path: Path, task: str) -> list[dict]:
             for key in required:
                 if key not in row:
                     raise DataError(f"{where}: missing field {key!r}")
-            if task == "token-cls":
+            if task == "seq-cls":
+                if not isinstance(row["text"], str) or not row["text"].strip():
+                    raise DataError(f"{where}: text must be a non-empty string")
+                if row["label"] is None:
+                    raise DataError(f"{where}: label must not be null")
+            else:
                 if not isinstance(row["tokens"], list) or not isinstance(row["tags"], list):
                     raise DataError(f"{where}: tokens and tags must be lists")
+                if not all(isinstance(t, str) for t in row["tokens"]):
+                    raise DataError(f"{where}: tokens must be a list of strings")
                 if len(row["tokens"]) != len(row["tags"]):
                     raise DataError(
                         f"{where}: tokens/tags length mismatch "
@@ -253,7 +264,7 @@ def freeze_splits(exp_dir, uid, train, val, test) -> dict:
 
 
 def read_test(uid: str) -> list[dict]:
-    with (vault_dir(uid) / "test.jsonl").open() as f:
+    with (vault_dir(uid) / "test.jsonl").open(encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
