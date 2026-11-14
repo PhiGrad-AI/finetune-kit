@@ -18,51 +18,57 @@ class DataError(ValueError):
     pass
 
 
-def load_rows(path: Path, task: str) -> list[dict]:
-    path = Path(path)
-    rows, seen = [], set()
-    with path.open("rb") as f:
-        for n, raw in enumerate(f, 1):
-            where = f"{path.name} line {n}"
-            try:
-                line = raw.decode("utf-8")
-            except UnicodeDecodeError as e:
-                raise DataError(f"{where}: not valid UTF-8 ({e.reason})") from e
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as e:
-                raise DataError(f"{where}: invalid JSON ({e.msg})") from e
-            if not isinstance(row, dict):
-                raise DataError(f"{where}: expected a JSON object")
-            required = ("id", "text", "label") if task == "seq-cls" else ("id", "tokens", "tags")
-            for key in required:
-                if key not in row:
-                    raise DataError(f"{where}: missing field {key!r}")
-            if task == "seq-cls":
-                if not isinstance(row["text"], str) or not row["text"].strip():
-                    raise DataError(f"{where}: text must be a non-empty string")
-                if row["label"] is None:
-                    raise DataError(f"{where}: label must not be null")
-            else:
-                if not isinstance(row["tokens"], list) or not isinstance(row["tags"], list):
-                    raise DataError(f"{where}: tokens and tags must be lists")
-                if not all(isinstance(t, str) for t in row["tokens"]):
-                    raise DataError(f"{where}: tokens must be a list of strings")
-                if len(row["tokens"]) != len(row["tags"]):
-                    raise DataError(
-                        f"{where}: tokens/tags length mismatch "
-                        f"({len(row['tokens'])} vs {len(row['tags'])})"
-                    )
-                for tag in row["tags"]:
-                    if not isinstance(tag, str) or not _TAG_RE.match(tag):
-                        raise DataError(f"{where}: invalid BIO/BIOES tag {tag!r}")
-            if row["id"] in seen:
-                raise DataError(f"{where}: duplicate id {row['id']!r}")
-            seen.add(row["id"])
-            rows.append(row)
+def validate_rows(
+    rows: list[dict], task: str, where: str, lines: list[int] | None = None
+) -> list[dict]:
+    """Per-row checks. `where` is the file name; messages say `line N` when `lines` is given, else `row N`."""
+    seen = set()
+    for i, row in enumerate(rows):
+        here = f"{where} line {lines[i]}" if lines else f"{where} row {i + 1}"
+        required = ("id", "text", "label") if task == "seq-cls" else ("id", "tokens", "tags")
+        for key in required:
+            if key not in row:
+                raise DataError(f"{here}: missing field {key!r}")
+        if task == "seq-cls":
+            if not isinstance(row["text"], str) or not row["text"].strip():
+                raise DataError(f"{here}: text must be a non-empty string")
+            if row["label"] is None or row["label"] == "":
+                raise DataError(f"{here}: label must not be {'null' if lines else 'empty'}")
+        else:
+            if not isinstance(row["tokens"], list) or not isinstance(row["tags"], list):
+                raise DataError(f"{here}: tokens and tags must be lists")
+            if not all(isinstance(t, str) for t in row["tokens"]):
+                raise DataError(f"{here}: tokens must be a list of strings")
+            if len(row["tokens"]) != len(row["tags"]):
+                raise DataError(
+                    f"{here}: tokens/tags length mismatch "
+                    f"({len(row['tokens'])} vs {len(row['tags'])})"
+                )
+            for tag in row["tags"]:
+                if not isinstance(tag, str) or not _TAG_RE.match(tag):
+                    raise DataError(f"{here}: invalid BIO/BIOES tag {tag!r}")
+        if row["id"] in seen:
+            raise DataError(f"{here}: duplicate id {row['id']!r}")
+        seen.add(row["id"])
     return rows
+
+
+def load_rows(path: Path, task: str, columns: dict | None = None, role: str = "train") -> list[dict]:
+    from finetune_kit import sources
+
+    path = Path(path)
+    suffix = path.suffix.lower()
+    columns = columns or {}
+    if suffix in (".csv", ".tsv") and task != "seq-cls":
+        raise DataError(f"{path.name}: CSV/TSV support seq-cls only; use JSONL or Parquet for {task}")
+    if suffix == ".jsonl":
+        numbered = sources.read_jsonl(path)
+        lines, rows = [n for n, _ in numbered], [r for _, r in numbered]
+        if columns:  # mapping keeps row order and count, so line numbers still line up
+            rows = sources.normalize(rows, task, columns, role, path.name)
+        return validate_rows(rows, task, path.name, lines)
+    raw = sources.read_table(path)
+    return validate_rows(sources.normalize(raw, task, columns, role, path.name), task, path.name)
 
 
 def label_map(train_rows: list[dict], task: str) -> list[str]:

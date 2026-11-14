@@ -42,7 +42,7 @@ def setup_experiment(
     root: Path, name: str, *, task: str, model: str, train: str, val: str | None, test: str | None,
     metric: str, metric_params: dict, guardrail: str | None, guardrail_params: dict,
     positive_class: str | None, seeds: int, max_runs: int, max_hours: float, subset: int | None,
-    custom_metric: str | None, direction: str | None,
+    custom_metric: str | None, direction: str | None, columns: dict | None = None,
 ) -> Path:
     from finetune_kit.profiles import load_profiles
 
@@ -93,7 +93,7 @@ def setup_experiment(
         raise ValueError(f"--metric or --guardrail must be the custom metric {cm.func!r}")
 
     if task == "seq-cls":
-        labels = data.label_map(data.load_rows(_resolve(root, train), task), task)
+        labels = data.label_map(data.load_rows(_resolve(root, train), task, columns), task)
         if positive_class is not None and positive_class not in labels:
             raise ValueError(f"--positive-class {positive_class!r} is not a train label {labels}")
         if positive_class is None and len(labels) > 2 and any(m.needs_positive for m in resolved):
@@ -107,7 +107,7 @@ def setup_experiment(
     profile = profiles[model]
     cfg = ex.ExperimentConfig(
         name=name, task=task, model=model,
-        data=ex.DataPaths(train=train, val=val, test=test),
+        data=ex.DataPaths(train=train, val=val, test=test, columns=columns or {}),
         objective=ex.MetricRef(metric=metric, params=metric_params),
         guardrail=ex.MetricRef(metric=guardrail, params=guardrail_params) if guardrail else None,
         positive_class=positive_class, custom_metric=cm, seeds=seeds,
@@ -161,10 +161,11 @@ def check_data(exp_dir: Path, *, resplit: bool = False, val_frac: float = 0.1) -
         _refuse_resplit_after_noise(exp_dir)
     # Everything that can fail (data errors, tokenizer download) runs before anything is written.
     task = cfg.task
-    train = data.load_rows(_resolve(root, cfg.data.train), task)
+    cols = cfg.data.columns
+    train = data.load_rows(_resolve(root, cfg.data.train), task, cols, "train")
     if cfg.data.val and cfg.data.test:
-        val = data.load_rows(_resolve(root, cfg.data.val), task)
-        test = data.load_rows(_resolve(root, cfg.data.test), task)
+        val = data.load_rows(_resolve(root, cfg.data.val), task, cols, "val")
+        test = data.load_rows(_resolve(root, cfg.data.test), task, cols, "test")
     else:
         train, val, test = data.make_splits(train, task, frac=(1 - 0.1 - val_frac, val_frac, 0.1))
     profile = store.profile_for(cfg, {}, root)

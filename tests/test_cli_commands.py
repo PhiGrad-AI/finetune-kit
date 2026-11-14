@@ -370,3 +370,32 @@ def test_check_data_resplit_refused_after_noise_run(runner, seq_jsonl, tmp_path)
 def test_new_requires_two_seeds(runner, seq_jsonl):
     r = _new(runner, seq_jsonl, "--seeds", "1")
     assert r.exit_code == 2 and "--seeds must be at least 2" in _out(r)["error"]
+
+
+def test_new_with_csv_and_columns(runner, tmp_path):
+    (tmp_path / "train.csv").write_text(
+        "prompt,is_injection\n" + "".join(f"msg {i} here,{i % 2}\n" for i in range(60)), encoding="utf-8"
+    )
+    r = runner.invoke(app, [
+        "new", "csvexp", "--task", "seq-cls", "--model", "tiny-bert", "--train", "train.csv",
+        "--metric", "macro_f1", "--columns", '{"text":"prompt","label":"is_injection"}',
+    ])
+    assert r.exit_code == 0, r.stdout
+    exp = tmp_path / "experiments" / _out(r)["experiment"]
+    assert ex.load(exp)[0].data.columns == {"text": "prompt", "label": "is_injection"}
+    r = runner.invoke(app, ["check-data", exp.name[:3]])
+    assert r.exit_code == 0, r.stdout
+    frozen = [json.loads(l) for l in (exp / "splits" / "train.jsonl").read_text().splitlines()]
+    assert frozen and all(set(x) == {"id", "text", "label"} for x in frozen)
+    assert frozen[0]["id"].startswith("train-")
+
+
+def test_new_bad_column_writes_nothing(runner, tmp_path):
+    (tmp_path / "train.csv").write_text("prompt,label\nhi,0\nyo,1\n", encoding="utf-8")
+    r = runner.invoke(app, [
+        "new", "csvexp", "--task", "seq-cls", "--model", "tiny-bert", "--train", "train.csv",
+        "--metric", "macro_f1", "--columns", '{"text":"promt"}',
+    ])
+    assert r.exit_code == 2
+    assert "no column 'promt'" in _out(r)["error"]
+    assert not list((tmp_path / "experiments").glob("001-*"))

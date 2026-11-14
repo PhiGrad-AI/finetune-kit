@@ -25,6 +25,7 @@ class DataPaths(BaseModel):
     train: str
     val: str | None = None
     test: str | None = None
+    columns: dict[str, str] = {}
 
 
 class MetricRef(BaseModel):
