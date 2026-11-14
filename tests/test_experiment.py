@@ -79,3 +79,14 @@ def test_commit_after_record_is_not_tamper(tmp_path):
     ex.record_checksums(d, root)
     ex.commit_space(d, ex.SearchSpace(round=0, tunable=["lr", "weight_decay"], losses=["ce"]))
     ex.verify_checksums(d, root)
+
+
+def test_commit_space_new_round_resets_non_keep_streak(tmp_path):
+    _, d = _setup(tmp_path)
+    space = ex.SearchSpace(round=0, tunable=["lr"], losses=["ce"])
+    ex.commit_space(d, space)
+    state = ex.load(d)[2]
+    state.non_keep_streak = 7
+    ex.save_state(d, state)
+    assert ex.commit_space(d, space).non_keep_streak == 0
+    assert ex.load(d)[2].non_keep_streak == 0

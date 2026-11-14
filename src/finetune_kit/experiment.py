@@ -173,6 +173,8 @@ def _commit_space(exp_dir: Path, space: SearchSpace) -> State:
         if l not in allowed:
             raise ValueError(f"loss {l!r} is not allowed for {cfg.task} (allowed: {', '.join(allowed)})")
     state.round += 1
+    if state.round > 1:
+        state.non_keep_streak = 0  # a reopened space starts a fresh run of non-keeps
     _dump_yaml(exp_dir / SPACE_FILE, space.model_copy(update={"round": state.round}))
     state.checksums[SPACE_FILE] = _sha(exp_dir / SPACE_FILE)
     save_state(exp_dir, state)
