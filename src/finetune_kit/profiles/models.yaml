@@ -1,0 +1,129 @@
+# Shipped model profiles. Revisions are pinned commit shas.
+
+ultrabert-150m:
+  hf_id: dmis-lab/UltraBERT-150M
+  revision: 545ac9d9c7aece444f014ada5a1e9818132b4d35
+  tasks: [seq-cls, token-cls]
+  lr_default: 8e-5
+  lr_range: [2e-5, 1.5e-4]
+  max_len: 512
+  batch: 8
+  micro: 4
+  force_fp32_on_mps: false
+  grad_checkpointing: false
+  trust_remote_code: true
+  dropout_keys: {hidden: [], attn: [attention_dropout]}
+  lora_targets: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  notes: "custom architecture (trust_remote_code); config has no hidden dropout, only attention_dropout"
+
+deberta-v3-base:
+  hf_id: microsoft/deberta-v3-base
+  revision: 8ccc9b6f36199bec6961081d44eb72fb3f7353f3
+  tasks: [seq-cls, token-cls]
+  lr_default: 1e-5
+  lr_range: [5e-6, 3e-5]
+  max_len: 512
+  batch: 8
+  micro: 4
+  force_fp32_on_mps: true
+  grad_checkpointing: true
+  trust_remote_code: false
+  dropout_keys: {hidden: [hidden_dropout_prob], attn: [attention_probs_dropout_prob]}
+  lora_targets: [query_proj, key_proj, value_proj, dense]
+  notes: ""
+
+deberta-v3-large:
+  hf_id: microsoft/deberta-v3-large
+  revision: 64a8c8eab3e352a784c658aef62be1662607476f
+  tasks: [seq-cls, token-cls]
+  lr_default: 6e-6
+  lr_range: [3e-6, 1.5e-5]
+  max_len: 512
+  batch: 8
+  micro: 2
+  force_fp32_on_mps: true
+  grad_checkpointing: true
+  trust_remote_code: false
+  dropout_keys: {hidden: [hidden_dropout_prob], attn: [attention_probs_dropout_prob]}
+  lora_targets: [query_proj, key_proj, value_proj, dense]
+  notes: ""
+
+roberta-base:
+  hf_id: FacebookAI/roberta-base
+  revision: e2da8e2f811d1448a5b465c236feacd80ffbac7b
+  tasks: [seq-cls, token-cls]
+  lr_default: 2e-5
+  lr_range: [1e-5, 5e-5]
+  max_len: 512
+  batch: 8
+  micro: 4
+  force_fp32_on_mps: false
+  grad_checkpointing: false
+  trust_remote_code: false
+  dropout_keys: {hidden: [hidden_dropout_prob], attn: [attention_probs_dropout_prob]}
+  lora_targets: [query, key, value, dense]
+  notes: ""
+
+roberta-large:
+  hf_id: FacebookAI/roberta-large
+  revision: 722cf37b1afa9454edce342e7895e588b6ff1d59
+  tasks: [seq-cls, token-cls]
+  lr_default: 1e-5
+  lr_range: [5e-6, 2e-5]
+  max_len: 512
+  batch: 8
+  micro: 2
+  force_fp32_on_mps: false
+  grad_checkpointing: false
+  trust_remote_code: false
+  dropout_keys: {hidden: [hidden_dropout_prob], attn: [attention_probs_dropout_prob]}
+  lora_targets: [query, key, value, dense]
+  notes: ""
+
+modernbert-base:
+  hf_id: answerdotai/ModernBERT-base
+  revision: 8949b909ec900327062f0ebf497f51aef5e6f0c8
+  tasks: [seq-cls, token-cls]
+  lr_default: 5e-5
+  lr_range: [2e-5, 1e-4]
+  max_len: 512
+  batch: 8
+  micro: 4
+  force_fp32_on_mps: false
+  grad_checkpointing: false
+  trust_remote_code: false
+  dropout_keys: {hidden: [embedding_dropout, mlp_dropout], attn: [attention_dropout]}
+  lora_targets: [Wqkv, Wo, Wi]
+  notes: "model allows 8192 tokens; default max_len 512"
+
+modernbert-large:
+  hf_id: answerdotai/ModernBERT-large
+  revision: 45bb4654a4d5aaff24dd11d4781fa46d39bf8c13
+  tasks: [seq-cls, token-cls]
+  lr_default: 3e-5
+  lr_range: [1e-5, 6e-5]
+  max_len: 512
+  batch: 8
+  micro: 2
+  force_fp32_on_mps: false
+  grad_checkpointing: false
+  trust_remote_code: false
+  dropout_keys: {hidden: [embedding_dropout, mlp_dropout], attn: [attention_dropout]}
+  lora_targets: [Wqkv, Wo, Wi]
+  notes: "model allows 8192 tokens; default max_len 512"
+
+bert-base:
+  hf_id: google-bert/bert-base-uncased
+  revision: 86b5e0934494bd15c9632b12f734a8a67f723594
+  tasks: [seq-cls, token-cls]
+  lr_default: 3e-5
+  lr_range: [1e-5, 5e-5]
+  max_len: 512
+  batch: 8
+  micro: 4
+  force_fp32_on_mps: false
+  grad_checkpointing: false
+  trust_remote_code: false
+  dropout_keys: {hidden: [hidden_dropout_prob], attn: [attention_probs_dropout_prob]}
+  lora_targets: [query, key, value, dense]
+  notes: ""
