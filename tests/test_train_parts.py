@@ -137,6 +137,14 @@ def test_asl_clip_ignores_easy_negatives(cfg):
     assert no_clip.item() > with_clip.item()
 
 
+def test_asl_fractional_gamma_pos_finite_grads(cfg):
+    x = torch.tensor([[-6.0, 25.0], [25.0, -6.0], [0.3, -0.2], [-6.0, 200.0]], requires_grad=True)
+    y = torch.tensor([1, 0, 1, 1])
+    loss = seq_loss(x, y, cfg(loss="asl", asl_gamma_pos=0.5), None, 1)
+    loss.backward()
+    assert torch.isfinite(loss) and torch.isfinite(x.grad).all()
+
+
 def test_class_weight_balanced_inverse_freq(cfg):
     w = class_weights(cfg(class_weight="balanced"), [0, 0, 0, 1], 2, 1)
     assert w.tolist() == pytest.approx([4 / (2 * 3), 4 / (2 * 1)])

@@ -20,7 +20,7 @@ def _asl(logits, y, cfg):
     p = torch.sigmoid(logits)
     pm = (p - cfg.asl_clip).clamp(min=0)
     eps = 1e-8
-    pos = -((1 - p) ** cfg.asl_gamma_pos) * F.logsigmoid(logits)
+    pos = -(torch.sigmoid(-logits).clamp(min=eps) ** cfg.asl_gamma_pos) * F.logsigmoid(logits)
     neg = -(pm ** cfg.asl_gamma_neg) * torch.log((1 - pm).clamp(min=eps))
     return (onehot * pos + (1 - onehot) * neg).sum()
 
