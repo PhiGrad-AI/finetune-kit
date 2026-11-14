@@ -40,7 +40,7 @@ def _from_dict(key: str, d: dict) -> ModelProfile:
     return ModelProfile(key=key, **d)
 
 
-def _to_dict(p: ModelProfile) -> dict:
+def to_dict(p: ModelProfile) -> dict:
     d = {f.name: getattr(p, f.name) for f in fields(p) if f.name != "key"}
     d["lr_range"] = list(p.lr_range)
     return d
@@ -112,7 +112,7 @@ def add_profile(
     )
     path = Path(project_root) / ".finetune-kit" / "models.yaml"
     data = _read_yaml(path)
-    data[profile.key] = _to_dict(profile)
+    data[profile.key] = to_dict(profile)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, sort_keys=False))
     return profile

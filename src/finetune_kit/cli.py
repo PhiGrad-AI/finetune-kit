@@ -391,11 +391,11 @@ def models_add(
     trust_remote_code: bool = typer.Option(False, "--trust-remote-code"),
 ) -> None:
     """Register a generic profile in .finetune-kit/models.yaml (config.json only, no weights)."""
-    from finetune_kit.profiles import _to_dict, add_profile
+    from finetune_kit.profiles import to_dict, add_profile
 
     with _errors():
         p = add_profile(Path.cwd(), hf_id, trust_remote_code)
-    emit({"key": p.key, **_to_dict(p)})
+    emit({"key": p.key, **to_dict(p)})
 
 
 @app.command("metrics")

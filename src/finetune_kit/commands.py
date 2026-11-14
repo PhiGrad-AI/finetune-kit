@@ -6,7 +6,6 @@ import shutil
 from pathlib import Path
 
 from finetune_kit import data, experiment as ex, metrics, store
-from finetune_kit.data import DataError
 from finetune_kit.paths import vault_dir
 
 STREAK_STOP = 10
@@ -135,38 +134,42 @@ def check_data(exp_dir: Path, *, resplit: bool = False, val_frac: float = 0.1) -
     splits = exp_dir / "splits"
     if not 0 < val_frac < 0.9:
         raise ValueError("--val-frac must be between 0 and 0.9")
+    frozen_msg = "splits already frozen; --resplit discards them and resets the experiment state"
+    if splits.exists() and not resplit:
+        raise ValueError(frozen_msg)
+    # Everything that can fail (data errors, tokenizer download) runs before anything is written.
+    task = cfg.task
+    train = data.load_rows(_resolve(root, cfg.data.train), task)
+    if cfg.data.val and cfg.data.test:
+        val = data.load_rows(_resolve(root, cfg.data.val), task)
+        test = data.load_rows(_resolve(root, cfg.data.test), task)
+    else:
+        train, val, test = data.make_splits(train, task, frac=(1 - 0.1 - val_frac, val_frac, 0.1))
+    profile = store.profile_for(cfg, {}, root)
+    report = data.check(
+        exp_dir, task, profile.max_len, load_tokenizer(profile),
+        {"train": train, "val": val, "test": test},
+    )
+    labels = data.label_map(train, task)
+    positive = cfg.positive_class or (labels[1] if task == "seq-cls" and len(labels) > 1 else None)
+    try:
+        params = {**metrics.get(cfg.objective.metric).params, **cfg.objective.params}
+    except KeyError:  # custom metric
+        params = dict(cfg.objective.params)
+    warning = data.val_size_warning(
+        task, cfg.objective.metric, params, report["label_dist"].get("val", {}), positive
+    )
+    if warning:
+        report["warnings"].append(warning)
+
     with ex.state_lock(exp_dir):
         if splits.exists():
             if not resplit:
-                raise ValueError("splits already frozen; --resplit discards them and resets the experiment state")
+                raise ValueError(frozen_msg)
             shutil.rmtree(splits)
             (vault_dir(cfg.uid) / "test.jsonl").unlink(missing_ok=True)
             ex.save_state(exp_dir, ex.State())
-        task = cfg.task
-        train = data.load_rows(_resolve(root, cfg.data.train), task)
-        if cfg.data.val and cfg.data.test:
-            val = data.load_rows(_resolve(root, cfg.data.val), task)
-            test = data.load_rows(_resolve(root, cfg.data.test), task)
-        else:
-            train, val, test = data.make_splits(train, task, frac=(1 - 0.1 - val_frac, val_frac, 0.1))
         data.freeze_splits(exp_dir, cfg.uid, train, val, test)
-
-        profile = store.profile_for(cfg, {}, root)
-        report = data.check(
-            exp_dir, task, profile.max_len, load_tokenizer(profile),
-            {"train": train, "val": val, "test": test},
-        )
-        labels = data.label_map(train, task)
-        positive = cfg.positive_class or (labels[1] if task == "seq-cls" and len(labels) > 1 else None)
-        try:
-            params = {**metrics.get(cfg.objective.metric).params, **cfg.objective.params}
-        except KeyError:  # custom metric
-            params = dict(cfg.objective.params)
-        warning = data.val_size_warning(
-            task, cfg.objective.metric, params, report["label_dist"].get("val", {}), positive
-        )
-        if warning:
-            report["warnings"].append(warning)
         (exp_dir / "data-report.json").write_text(json.dumps(report, indent=2))
         ex.record_checksums(exp_dir, root)
     return report
@@ -182,6 +185,8 @@ def _num(v: str):
         f = float(v)
     except ValueError:
         return v
+    if math.isnan(f):
+        return None
     return int(f) if f.is_integer() and "." not in v and "e" not in v.lower() else f
 
 
