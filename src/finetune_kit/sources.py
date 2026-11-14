@@ -1,9 +1,12 @@
 """Reading local data files (JSONL, CSV, TSV, Parquet) and mapping them to the kit's row schema."""
 import csv
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
+from finetune_kit import data
 from finetune_kit.data import DataError
+from finetune_kit.paths import kit_home
 
 _STANDARD = ("id", "text", "label", "tokens", "tags", "group_id")
 
@@ -100,3 +103,160 @@ def normalize(
         row_id = str(row.pop("id")) if "id" in row else f"{role}-{n:06d}"
         rows.append({"id": row_id, **row})
     return rows
+
+
+# ---- Hugging Face ----
+
+_SPLIT_ALIASES = {
+    "train": ("train",),
+    "val": ("validation", "valid", "val", "dev"),
+    "test": ("test",),
+}
+
+
+@dataclass
+class Loaded:
+    train: list[dict]
+    val: list[dict] | None
+    test: list[dict] | None
+    origin: dict[str, str]
+    ignored_splits: list[str]
+    test_unlabelled: bool
+
+
+def parse_hf(spec: str) -> tuple[str, str | None]:
+    """`hf:<repo_id>` or `hf:<repo_id>:<config>`; repo_id may contain one `/`."""
+    err = ValueError("Hugging Face source must be hf:<id> or hf:<id>:<config>")
+    if not spec.startswith("hf:"):
+        raise err
+    parts = spec[3:].split(":")
+    if len(parts) > 2 or not parts[0] or parts[0].count("/") > 1 or any(not p.strip() for p in parts):
+        raise err
+    if parts[0].startswith("/") or parts[0].endswith("/"):
+        raise err
+    return parts[0], parts[1] if len(parts) == 2 else None
+
+
+def _spec(repo_id: str, config: str | None) -> str:
+    return f"hf:{repo_id}" + (f":{config}" if config else "")
+
+
+def _first_line(e: Exception) -> str:
+    lines = str(e).strip().splitlines()
+    return lines[0].strip() if lines else type(e).__name__
+
+
+def _resolve_revision(repo_id: str, revision: str | None) -> str:
+    try:
+        from huggingface_hub import HfApi
+
+        return HfApi().dataset_info(repo_id, revision=revision).sha
+    except Exception as e:
+        raise ValueError(f"could not load {_spec(repo_id, None)}: {_first_line(e)}") from e
+
+
+def _load_dataset(repo_id: str, config: str | None, revision: str) -> dict[str, tuple[list[dict], dict]]:
+    try:
+        import datasets
+
+        ds = datasets.load_dataset(
+            repo_id, config, revision=revision, cache_dir=str(kit_home() / "hf-cache")
+        )
+        return {name: (ds[name].to_list(), dict(ds[name].features)) for name in ds}
+    except Exception as e:
+        raise ValueError(f"could not load {_spec(repo_id, config)}: {_first_line(e)}") from e
+
+
+def pick_splits(names: list[str]) -> dict[str, str]:
+    """role -> split name, matching aliases case-insensitively. Raises when there is no train split."""
+    lower = {n.lower(): n for n in reversed(names)}
+    picked = {}
+    for role, aliases in _SPLIT_ALIASES.items():
+        for alias in aliases:
+            if alias in lower:
+                picked[role] = lower[alias]
+                break
+    if "train" not in picked:
+        raise ValueError(f"no train split; splits are {names}")
+    return picked
+
+
+def _class_names(feature) -> list[str] | None:
+    import datasets
+
+    if isinstance(feature, datasets.ClassLabel):
+        return list(feature.names)
+    if isinstance(feature, list) and feature:
+        return _class_names(feature[0])
+    inner = getattr(feature, "feature", None)  # Sequence / List
+    return _class_names(inner) if inner is not None else None
+
+
+def label_names(features: dict, columns: dict[str, str], task: str) -> dict[str, list[str]]:
+    """ClassLabel names for the source column mapped to label (seq-cls) or tags (token-cls)."""
+    field = "label" if task == "seq-cls" else "tags"
+    col = columns.get(field, field)
+    names = _class_names(features[col]) if col in features else None
+    return {col: names} if names is not None else {}
+
+
+def load_hf(spec: str, revision: str, task: str, columns: dict) -> Loaded:
+    """Normalized but unvalidated rows for the train/val/test splits found."""
+    repo_id, config = parse_hf(spec)
+    raw = _load_dataset(repo_id, config, revision)
+    picked = pick_splits(list(raw))
+    used = set(picked.values())
+    out: dict[str, list[dict] | None] = {"train": None, "val": None, "test": None}
+    for role, split in picked.items():
+        rows, features = raw[split]
+        out[role] = normalize(
+            rows, task, columns, role, f"{spec} {split}", label_names(features, columns, task)
+        )
+    unlabelled = out["test"] is not None and _all_unlabelled(out["test"], task)
+    return Loaded(
+        train=out["train"],
+        val=out["val"],
+        test=out["test"],
+        origin={role: "published" for role in picked},
+        ignored_splits=[n for n in raw if n not in used],
+        test_unlabelled=unlabelled,
+    )
+
+
+def _missing(v) -> bool:
+    return v is None or v == "" or (isinstance(v, int) and not isinstance(v, bool) and v == -1)
+
+
+def _all_unlabelled(rows: list[dict], task: str) -> bool:
+    if task == "seq-cls":
+        return all(_missing(r.get("label")) for r in rows)
+    return all(
+        not (r.get("tags") or []) or all(_missing(t) for t in r["tags"]) for r in rows
+    )
+
+
+def resolve_splits(loaded: Loaded, task: str, val_frac: float) -> tuple[list, list, list, dict]:
+    """Return train, val, test and split_origin, carving missing parts from train, then validate."""
+    train, val, test = loaded.train, loaded.val, loaded.test
+    origin = {"train": "published", "val": "published", "test": "published"}
+    test_missing = test is None
+    carve_test = test_missing or loaded.test_unlabelled
+    if val is None and carve_test:
+        train, val, test = data.make_splits(train, task, frac=(1 - 0.1 - val_frac, val_frac, 0.1))
+        origin["val"] = "carved from train"
+        origin["test"] = (
+            "carved from train" if test_missing else "carved from train (published test has no labels)"
+        )
+    elif val is None:
+        train, val, _ = data.make_splits(train, task, frac=(1 - val_frac, val_frac, 0))
+        origin["val"] = "carved from train"
+    elif carve_test:
+        train, _, test = data.make_splits(train, task, frac=(0.9, 0, 0.1))
+        origin["test"] = (
+            "carved from train (no published test split)"
+            if test_missing
+            else "carved from train (published test has no labels)"
+        )
+    for role, rows in (("train", train), ("val", val), ("test", test)):
+        data.validate_rows(rows, task, f"Hugging Face {role} split")
+    return train, val, test, origin

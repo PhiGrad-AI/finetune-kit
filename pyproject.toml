@@ -15,6 +15,7 @@ dependencies = [
   "peft",
   "pytorch-crf",
   "pyarrow>=26.0.1",
+  "datasets>=5.2.0",
 ]
 
 [project.scripts]

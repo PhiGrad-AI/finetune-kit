@@ -114,3 +114,111 @@ def test_normalize_class_label_names():
 def test_normalize_identity_drops_extras():
     rows = sources.normalize([{"text": "a", "label": "0", "junk": 1}], "seq-cls", {}, "val", "x")
     assert rows == [{"id": "val-000001", "text": "a", "label": "0"}]
+
+
+# ---- Hugging Face loading and split resolution ----
+
+import datasets  # noqa: E402
+
+_CL = datasets.ClassLabel(names=["benign", "injection"])
+
+
+def _seq_rows(n, label=lambda i: i % 2):
+    return [{"text": f"t{i}", "label": label(i), "extra": i} for i in range(n)]
+
+
+def _fake(monkeypatch, splits, features=None):
+    feats = features if features is not None else {"label": _CL}
+    monkeypatch.setattr(sources, "_resolve_revision", lambda repo, rev: "abc123")
+    monkeypatch.setattr(
+        sources, "_load_dataset", lambda repo, cfg, rev: {k: (v, feats) for k, v in splits.items()}
+    )
+
+
+def test_parse_hf():
+    assert sources.parse_hf("hf:glue") == ("glue", None)
+    assert sources.parse_hf("hf:glue:sst2") == ("glue", "sst2")
+    assert sources.parse_hf("hf:a/b:cfg") == ("a/b", "cfg")
+    with pytest.raises(ValueError, match="Hugging Face source must be"):
+        sources.parse_hf("hf:a/b/c")
+
+
+def test_pick_splits_aliases():
+    assert sources.pick_splits(["train", "dev", "test"]) == {"train": "train", "val": "dev", "test": "test"}
+    assert sources.pick_splits(["TRAIN", "Validation"]) == {"train": "TRAIN", "val": "Validation"}
+    with pytest.raises(ValueError, match="no train split"):
+        sources.pick_splits(["foo"])
+
+
+def test_classlabel_names_applied(monkeypatch):
+    _fake(monkeypatch, {"train": _seq_rows(4)})
+    loaded = sources.load_hf("hf:x/y", "abc123", "seq-cls", {})
+    assert [r["label"] for r in loaded.train] == ["benign", "injection", "benign", "injection"]
+    assert "extra" not in loaded.train[0]
+
+
+def test_token_cls_names():
+    feats = {"tags": datasets.Sequence(datasets.ClassLabel(names=["O", "B-X"]))}
+    assert sources.label_names(feats, {}, "token-cls") == {"tags": ["O", "B-X"]}
+    assert sources.label_names({"y": _CL}, {"label": "y"}, "seq-cls") == {"y": ["benign", "injection"]}
+    assert sources.label_names({"label": datasets.Value("string")}, {}, "seq-cls") == {}
+
+
+def test_all_published_used_as_is(monkeypatch):
+    _fake(monkeypatch, {"train": _seq_rows(8), "validation": _seq_rows(2), "test": _seq_rows(2)})
+    loaded = sources.load_hf("hf:x/y", "abc123", "seq-cls", {})
+    tr, va, te, origin = sources.resolve_splits(loaded, "seq-cls", 0.1)
+    assert (len(tr), len(va), len(te)) == (8, 2, 2)
+    assert origin == {"train": "published", "val": "published", "test": "published"}
+
+
+def test_unlabelled_test_carved(monkeypatch):
+    _fake(monkeypatch, {"train": _seq_rows(40), "validation": _seq_rows(4), "test": _seq_rows(4, lambda i: -1)})
+    loaded = sources.load_hf("hf:x/y", "abc123", "seq-cls", {})
+    assert loaded.test_unlabelled
+    tr, va, te, origin = sources.resolve_splits(loaded, "seq-cls", 0.1)
+    assert origin["test"] == "carved from train (published test has no labels)"
+    assert origin["val"] == "published"
+    assert len(te) == 4 and len(tr) == 36 and all(r["label"] in ("benign", "injection") for r in te)
+
+
+def test_missing_val_carved(monkeypatch):
+    _fake(monkeypatch, {"train": _seq_rows(40), "test": _seq_rows(6)})
+    tr, va, te, origin = sources.resolve_splits(
+        sources.load_hf("hf:x/y", "abc123", "seq-cls", {}), "seq-cls", 0.1
+    )
+    assert origin == {"train": "published", "val": "carved from train", "test": "published"}
+    assert len(va) == 4 and len(tr) == 36 and len(te) == 6
+
+
+def test_only_train_carved(monkeypatch):
+    _fake(monkeypatch, {"train": _seq_rows(100)})
+    tr, va, te, origin = sources.resolve_splits(
+        sources.load_hf("hf:x/y", "abc123", "seq-cls", {}), "seq-cls", 0.1
+    )
+    assert len(tr) + len(va) + len(te) == 100 and va and te
+    assert origin["val"] == "carved from train" and origin["test"] == "carved from train"
+
+
+def test_generated_ids_unique_across_splits(monkeypatch):
+    _fake(monkeypatch, {"train": _seq_rows(8), "validation": _seq_rows(2), "test": _seq_rows(2)})
+    tr, va, te, _ = sources.resolve_splits(
+        sources.load_hf("hf:x/y", "abc123", "seq-cls", {}), "seq-cls", 0.1
+    )
+    ids = [r["id"] for r in tr + va + te]
+    assert len(ids) == len(set(ids)) == 12
+
+
+def test_ignored_splits_reported(monkeypatch):
+    _fake(monkeypatch, {"train": _seq_rows(4), "unsupervised": _seq_rows(3)})
+    assert sources.load_hf("hf:x/y", "abc123", "seq-cls", {}).ignored_splits == ["unsupervised"]
+
+
+def test_library_error_is_one_line_value_error(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("Dataset 'x/y' doesn't exist\nTraceback noise")
+
+    monkeypatch.setattr(datasets, "load_dataset", boom)
+    with pytest.raises(ValueError) as e:
+        sources._load_dataset("x/y", "cfg", "abc")
+    assert str(e.value) == "could not load hf:x/y:cfg: Dataset 'x/y' doesn't exist"
