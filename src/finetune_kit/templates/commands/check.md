@@ -45,6 +45,11 @@ you picked.
 
 2. **Explain the report**, briefly and in plain words, one topic per line:
    - `n_rows`: rows in train, validation (`val`) and test.
+   - `split_origin`: where each of train, validation and test came from (a published split, a
+     file, or carved from train). If any part was carved from train, say so and give the reason
+     from the matching `warnings` line ("<role> carved from train: <reason>").
+   - `ignored_splits`, if not empty: published splits of the dataset that were not used. Tell
+     the user which ones and that they play no part.
    - `label_dist` and `minority_share`: how the labels are spread. If the smallest class is
      rare (say under 30%), mention that the hparams stage will suggest settings for that.
    - `token_len` (`p50`, `p95`, `max`) and `n_over_max_len`: text length in model tokens. Rows
