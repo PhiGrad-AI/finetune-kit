@@ -319,6 +319,7 @@ def pin_revision(spec: str, revision: str | None) -> str:
 
 _MAX_LABELS = 50
 _SHOWN_LABELS = 20
+_MAX_LABEL_CHARS = 40  # longer string values are text, never label values
 _LABEL_NAMES = ("label", "labels", "class", "target")
 
 
@@ -372,7 +373,7 @@ def _feature_type(feature) -> str:
 
 
 def _label_counts(rows: list[dict], col: str, names: list[str] | None) -> tuple[int, dict]:
-    """(n_distinct, top values by count) for a column, or (n, {}) when it has too many values."""
+    """(n_distinct, top values by count), or (n, {}) when it has too many values or a value is long text."""
     counts: dict = {}
     for r in rows:
         v = r.get(col)
@@ -380,6 +381,8 @@ def _label_counts(rows: list[dict], col: str, names: list[str] | None) -> tuple[
             continue
         v = _names(v, names) if names else v
         key = v if isinstance(v, str) else str(v)
+        if isinstance(v, str) and len(v) > _MAX_LABEL_CHARS:
+            return _MAX_LABELS + 1, {}
         counts[key] = counts.get(key, 0) + 1
         if len(counts) > _MAX_LABELS:
             return len(counts), {}
@@ -393,7 +396,7 @@ def _text_column(rows: list[dict], columns: dict[str, str]) -> str | None:
         lens = [len(r[col]) for r in rows if isinstance(r.get(col), str)]
         return sum(lens) / len(lens) if lens else 0
 
-    strings = [c for c, t in columns.items() if t == "string"]
+    strings = [c for c, t in columns.items() if t == "string" and c.lower() != "id" and not c.lower().endswith("_id")]
     return max(strings, key=mean_len) if strings else None
 
 
