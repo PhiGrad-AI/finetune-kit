@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from finetune_kit import commands, store
+from finetune_kit import commands, sources, store
 from finetune_kit import experiment as ex
 from finetune_kit.cli import app
 from finetune_kit.data import val_size_warning
@@ -370,3 +370,234 @@ def test_check_data_resplit_refused_after_noise_run(runner, seq_jsonl, tmp_path)
 def test_new_requires_two_seeds(runner, seq_jsonl):
     r = _new(runner, seq_jsonl, "--seeds", "1")
     assert r.exit_code == 2 and "--seeds must be at least 2" in _out(r)["error"]
+
+
+def test_new_with_csv_and_columns(runner, tmp_path):
+    (tmp_path / "train.csv").write_text(
+        "prompt,is_injection\n" + "".join(f"msg {i} here,{i % 2}\n" for i in range(60)), encoding="utf-8"
+    )
+    r = runner.invoke(app, [
+        "new", "csvexp", "--task", "seq-cls", "--model", "tiny-bert", "--train", "train.csv",
+        "--metric", "macro_f1", "--columns", '{"text":"prompt","label":"is_injection"}',
+    ])
+    assert r.exit_code == 0, r.stdout
+    exp = tmp_path / "experiments" / _out(r)["experiment"]
+    assert ex.load(exp)[0].data.columns == {"text": "prompt", "label": "is_injection"}
+    r = runner.invoke(app, ["check-data", exp.name[:3]])
+    assert r.exit_code == 0, r.stdout
+    frozen = [json.loads(l) for l in (exp / "splits" / "train.jsonl").read_text().splitlines()]
+    assert frozen and all(set(x) == {"id", "text", "label"} for x in frozen)
+    assert frozen[0]["id"].startswith("train-")
+
+
+def test_new_bad_column_writes_nothing(runner, tmp_path):
+    (tmp_path / "train.csv").write_text("prompt,label\nhi,0\nyo,1\n", encoding="utf-8")
+    r = runner.invoke(app, [
+        "new", "csvexp", "--task", "seq-cls", "--model", "tiny-bert", "--train", "train.csv",
+        "--metric", "macro_f1", "--columns", '{"text":"promt"}',
+    ])
+    assert r.exit_code == 2
+    assert "no column 'promt'" in _out(r)["error"]
+    assert not list((tmp_path / "experiments").glob("001-*"))
+
+
+# ---- Hugging Face sources ----
+
+def _hf_rows(n, tag):
+    return [{"text": f"{tag} word{i} text", "label": i % 2} for i in range(n)]
+
+
+def _hf_new(runner, *extra, name="hf"):
+    return runner.invoke(app, [
+        "new", name, "--task", "seq-cls", "--model", "tiny-bert", "--source", "hf:x/y",
+        "--metric", "macro_f1", *extra,
+    ])
+
+
+def _hf_published(hf_fake):
+    hf_fake({"train": _hf_rows(40, "tr"), "validation": _hf_rows(8, "va"), "test": _hf_rows(6, "te")})
+
+
+def test_new_from_hf_pins_revision(runner, tmp_path, hf_fake):
+    _hf_published(hf_fake)
+    r = _hf_new(runner, "--revision", "main")
+    assert r.exit_code == 0, r.stdout
+    cfg, _, _ = ex.load(_exp_dir(tmp_path))
+    assert cfg.data.source == "hf:x/y" and cfg.data.revision == "abc123" and cfg.data.train is None
+
+
+def test_check_data_from_hf_freezes_published_splits(runner, tmp_path, hf_fake):
+    _hf_published(hf_fake)
+    assert _hf_new(runner).exit_code == 0
+    r = runner.invoke(app, ["check-data", "001"])
+    assert r.exit_code == 0, r.stdout
+    report, d = _out(r), _exp_dir(tmp_path)
+    cfg, _, _ = ex.load(d)
+    assert len((d / "splits" / "train.jsonl").read_text().splitlines()) == 40
+    assert len((vault_dir(cfg.uid) / "test.jsonl").read_text().splitlines()) == 6
+    assert report["split_origin"] == {"train": "published", "val": "published", "test": "published"}
+    assert report["ignored_splits"] == []
+    assert not any("carved" in w for w in report["warnings"])
+
+
+def test_check_data_from_hf_carved_warnings_and_ignored(runner, tmp_path, hf_fake):
+    hf_fake({"train": _hf_rows(100, "tr"), "unsupervised": _hf_rows(3, "un")})
+    assert _hf_new(runner).exit_code == 0
+    report = _out(runner.invoke(app, ["check-data", "001"]))
+    assert report["ignored_splits"] == ["unsupervised"]
+    assert "val carved from train: no published split" in report["warnings"]
+    assert "test carved from train: no published test split" in report["warnings"]
+
+
+def test_check_data_local_single_file_warning(runner, seq_jsonl, tmp_path):
+    _, report = _checked(runner, seq_jsonl, tmp_path)
+    assert report["split_origin"] == {"train": "provided", "val": "carved from train", "test": "carved from train"}
+    assert "val carved from train: single file given" in report["warnings"]
+
+
+def test_hf_not_found_is_json_error(runner, tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("could not load hf:x/y: not found")
+
+    monkeypatch.setattr(sources, "_resolve_revision", boom)
+    r = _hf_new(runner)
+    assert r.exit_code == 2
+    assert "could not load" in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists() or not list((tmp_path / "experiments").iterdir())
+
+
+def test_hf_load_failure_leaves_no_experiment(runner, tmp_path, monkeypatch):
+    monkeypatch.setattr(sources, "_resolve_revision", lambda repo, rev, cfg=None: "abc123")
+
+    def boom(*a, **k):
+        raise ValueError("could not load hf:x/y: gone")
+
+    monkeypatch.setattr(sources, "_load_dataset", boom)
+    r = _hf_new(runner)
+    assert r.exit_code == 2 and "could not load" in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists() or not list((tmp_path / "experiments").iterdir())
+
+
+def test_train_and_source_both_refused(runner, seq_jsonl, tmp_path, hf_fake):
+    _hf_published(hf_fake)
+    r = _new(runner, seq_jsonl, "--source", "hf:x/y")
+    assert r.exit_code == 2 and _out(r) == {"error": "give --train or --source, not both"}
+
+
+def test_neither_train_nor_source_refused(runner):
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--metric", "macro_f1"])
+    assert r.exit_code == 2 and _out(r) == {"error": "give --train or --source"}
+
+
+def test_source_with_val_or_revision_without_source_refused(runner, seq_jsonl, hf_fake):
+    _hf_published(hf_fake)
+    r = _hf_new(runner, "--val", "v.jsonl", "--test", "t.jsonl")
+    assert r.exit_code == 2 and _out(r) == {"error": "--val and --test only apply with --train"}
+    r = _new(runner, seq_jsonl, "--revision", "main")
+    assert r.exit_code == 2 and _out(r) == {"error": "--revision only applies with --source"}
+
+
+def test_bad_hf_spec_is_one_line_error(runner):
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--source", "glue",
+                            "--metric", "macro_f1"])
+    assert r.exit_code == 2 and "Hugging Face source must be" in _out(r)["error"]
+
+
+def test_hf_positive_class_checked_against_named_labels(runner, hf_fake):
+    _hf_published(hf_fake)
+    r = _hf_new(runner, "--positive-class", "injection")
+    assert r.exit_code == 0, r.stdout
+    r = _hf_new(runner, "--positive-class", "1", name="other")
+    assert r.exit_code == 2 and "not a train label" in _out(r)["error"]
+
+
+def test_existing_jsonl_experiment_yaml_still_loads(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    import yaml
+
+    raw = yaml.safe_load((d / "experiment.yaml").read_text())
+    for k in ("source", "revision"):
+        raw["data"].pop(k, None)
+    assert set(raw["data"]) <= {"train", "val", "test", "columns"}
+    cfg = ex.ExperimentConfig(**raw)
+    assert cfg.data.train == "data.jsonl" and cfg.data.source is None
+
+
+def test_cli_inspect_data_json(runner, tmp_path):
+    (tmp_path / "t.csv").write_text("prompt,is_injection\n" + "hello,0\nbye,1\n" * 3, encoding="utf-8")
+    r = runner.invoke(app, ["inspect-data", "--train", "t.csv"])
+    assert r.exit_code == 0, r.stdout
+    out = _out(r)
+    assert out["suggested_columns"] == {"text": "prompt", "label": "is_injection"}
+    assert "hello" not in r.stdout
+
+
+def test_cli_inspect_data_hf_and_error(runner, hf_fake):
+    _hf_published(hf_fake)
+    out = _out(runner.invoke(app, ["inspect-data", "--source", "hf:x/y"]))
+    assert out["revision"] == "abc123" and out["splits"]["validation"]["role"] == "val"
+    r = runner.invoke(app, ["inspect-data"])
+    assert r.exit_code == 2 and _out(r) == {"error": "give --train or --source"}
+
+
+# ---- final-review fixes ----
+
+def test_new_token_cls_bad_mapping_writes_nothing(runner, tok_jsonl, tmp_path):
+    rows = [{"id": f"t{i}", "words": ["a", "Ann"], "tags": ["O", "B-PER"]} for i in range(20)]
+    tok_jsonl(rows, "tr.jsonl")
+    r = runner.invoke(app, ["new", "n", "--task", "token-cls", "--model", "tiny-bert", "--train", "tr.jsonl",
+                            "--metric", "entity_f1", "--columns", '{"tokens":"wrds"}'])
+    assert r.exit_code == 2 and "no column 'wrds'" in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists() or not list((tmp_path / "experiments").iterdir())
+
+
+def test_new_bad_mapping_in_local_test_file_writes_nothing(runner, tmp_path):
+    (tmp_path / "tr.csv").write_text("prompt,y\n" + "".join(f"m {i},{i % 2}\n" for i in range(20)))
+    (tmp_path / "va.csv").write_text("prompt,y\nm,0\nn,1\n")
+    (tmp_path / "te.csv").write_text("text,y\nm,0\nn,1\n")
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--train", "tr.csv",
+                            "--val", "va.csv", "--test", "te.csv", "--metric", "macro_f1",
+                            "--columns", '{"text":"prompt","label":"y"}'])
+    assert r.exit_code == 2 and "te.csv: no column 'prompt'" in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists() or not list((tmp_path / "experiments").iterdir())
+
+
+def _text_as_label_csv(path, secret):
+    path.write_text("prompt,y\n" + "".join(f"{secret} {i},{i % 2}\n" for i in range(60)))
+
+
+def test_new_refuses_text_column_as_label(runner, tmp_path):
+    secret = "SENTINEL-row-text-zq81 a sentence well over forty characters"
+    _text_as_label_csv(tmp_path / "tr.csv", secret)
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--train", "tr.csv",
+                            "--metric", "macro_f1", "--positive-class", "x",
+                            "--columns", '{"text":"y","label":"prompt"}'])
+    assert r.exit_code == 2
+    assert secret not in r.stdout
+    assert "is --columns mapping the text column as the label?" in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists() or not list((tmp_path / "experiments").iterdir())
+
+
+def test_check_data_refuses_text_column_as_label(runner, tmp_path):
+    secret = "SENTINEL-row-text-zq81-but-longer-than-forty-characters"
+    (tmp_path / "tr.csv").write_text("prompt,y\n" + "".join(f"msg {i},{i % 2}\n" for i in range(60)))
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--train", "tr.csv",
+                            "--metric", "macro_f1", "--columns", '{"text":"prompt","label":"y"}'])
+    assert r.exit_code == 0, r.stdout
+    rows = [f"msg {i},{i % 2}" for i in range(60)]
+    rows[5] = f"msg 5,{secret}"
+    (tmp_path / "tr.csv").write_text("prompt,y\n" + "\n".join(rows) + "\n")
+    r = runner.invoke(app, ["check-data", "001"])
+    assert r.exit_code == 2 and secret not in r.stdout
+    assert "label column has" in _out(r)["error"]
+    assert not (_exp_dir(tmp_path) / "splits").exists()
+
+
+def test_new_id_null_mapping_saved(runner, tmp_path):
+    (tmp_path / "tr.csv").write_text("id,text,label\n" + "".join(f"1,m {i},{i % 2}\n" for i in range(60)))
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--train", "tr.csv",
+                            "--metric", "macro_f1", "--columns", '{"id": null}'])
+    assert r.exit_code == 0, r.stdout
+    assert ex.load(_exp_dir(tmp_path))[0].data.columns == {"id": None}
+    assert runner.invoke(app, ["check-data", "001"]).exit_code == 0

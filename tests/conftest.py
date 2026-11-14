@@ -1,3 +1,4 @@
+import datasets
 import pytest
 from typer.testing import CliRunner
 
@@ -36,3 +37,18 @@ def tok_jsonl(tmp_path):
         return _write_jsonl(tmp_path / name, rows)
 
     return write
+
+
+@pytest.fixture
+def hf_fake(monkeypatch):
+    """Stand-in for Hugging Face: hf_fake({split: rows}, features=None, sha=...) so tests never use the network."""
+    from finetune_kit import sources
+
+    def install(splits, features=None, sha="abc123"):
+        feats = features if features is not None else {"label": datasets.ClassLabel(names=["benign", "injection"])}
+        monkeypatch.setattr(sources, "_resolve_revision", lambda repo, rev, cfg=None: sha)
+        monkeypatch.setattr(
+            sources, "_load_dataset", lambda repo, cfg, rev: {k: (v, feats) for k, v in splits.items()}
+        )
+
+    return install

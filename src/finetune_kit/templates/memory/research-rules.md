@@ -62,8 +62,8 @@ Research stops when `finetune-kit compare` reports `"stop": true`, which happens
 - Never edit files that finetune-kit writes: anything under `.finetune-kit/memory/`,
   `experiments/*/splits/`, `experiments/*/runs/`, `experiments/*/final/`, and
   `experiments/*/{search-space.yaml, state.json, results.tsv, experiment.yaml, data-report.json}`.
-- Never open anything under `~/.finetune-kit/` (it holds the test split) or
-  `experiments/*/splits/`. Do not open the user's dataset files either; `finetune-kit check-data`
-  inspects them.
+- Never open anything under `~/.finetune-kit/` (it holds the test split), `~/.cache/huggingface/`
+  (it may hold downloaded datasets) or `experiments/*/splits/`. Do not open the user's dataset
+  files either; `finetune-kit check-data` inspects them.
 - The agent writes only its own notes: `experiment.md`, `data-report.md`, `bakeoff.md`,
   `search-space.md`, `baseline.md`, `log.md` and `report.md` in the experiment folder.
