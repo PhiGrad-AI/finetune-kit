@@ -24,8 +24,8 @@ space, and write `search-space.md`.
   go on, and base what you tell the user on it, not on guesses.
 - Never edit files that finetune-kit writes (`experiment.yaml`, `search-space.yaml`,
   `state.json`, `results.tsv`, `data-report.json`, `splits/`, `runs/`, `final/`,
-  `.finetune-kit/memory/`). Never open anything under `~/.finetune-kit/` or
-  `experiments/*/splits/`, and do not open the user's dataset files.
+  `.finetune-kit/memory/`). Never open anything under `~/.finetune-kit/`, `~/.cache/huggingface/`
+  or `experiments/*/splits/`, and do not open the user's dataset files.
 - If a command prints `{"error": "..."}`, tell the user in plain words what went wrong and what
   would fix it. Fix it yourself when the fix is yours to make (for example a mistyped option);
   otherwise stop and wait for the user.

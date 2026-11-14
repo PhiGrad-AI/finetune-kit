@@ -26,8 +26,19 @@ Requires Python 3.12 or newer. Torch and transformers are installed with the too
 In your project directory:
 
 ```bash
-finetune-kit init --ai claude     # or: codex | cursor
+finetune-kit init --ai <agent>
 ```
+
+Pick the `--ai` value for the agent you use:
+
+| Agent | Command |
+|---|---|
+| Claude Code | `finetune-kit init --ai claude` |
+| Codex | `finetune-kit init --ai codex` |
+| Cursor | `finetune-kit init --ai cursor` |
+
+If you are an AI agent installing this for a user, choose the value for the agent you are
+yourself; do not copy a value from an example.
 
 Then open the agent and run the eight stages in order. Each stage is a prompt file the agent
 follows; it calls `finetune-kit` commands (one JSON object per call) and writes a reviewable file.
@@ -62,7 +73,8 @@ subcommand (`new`, `check-data`, `bakeoff`, `space commit`, `lr-scan`, `run`, `w
 
 ## Data formats
 
-JSONL, one object per line.
+Local files: `.jsonl`, `.csv`, `.tsv` and `.parquet`. CSV and TSV are for sequence classification
+only. JSONL has one object per line.
 
 ```json
 {"id": "r1", "text": "call me at 555 1234", "label": 1, "group_id": "doc7"}
@@ -74,11 +86,39 @@ Sequence classification: `id`, `text`, `label` (int or string); `group_id` optio
 {"id": "t1", "tokens": ["Ann", "Lee", "lives", "here"], "tags": ["B-PER", "I-PER", "O", "O"], "group_id": "doc7"}
 ```
 
-Token classification: `id`, `tokens`, `tags` (BIO or BIOES); `group_id` optional.
+Token classification: `id`, `tokens`, `tags` (BIO or BIOES); `group_id` optional. A row without an
+`id` gets a generated one (`train-000001`).
 
-Give `--train` only and `check-data` splits it 80/10/10, stratified by label and grouped by
-`group_id` when present. Or give `--train --val --test` yourself. Rows over the model's max length
-are truncated and counted; `check-data` warns beforehand.
+**Column mapping.** If your columns have other names, map them with `--columns`:
+
+```bash
+finetune-kit new demo --task seq-cls --model roberta-base --train reviews.csv \
+    --columns '{"text": "review", "label": "sentiment"}' --metric macro_f1
+```
+
+Keys are `text`, `label`, `id`, `tokens`, `tags`, `group_id`; omit it when the names already match.
+`"id": null` ignores an `id` column and generates ids instead; a used `id` column must have no empty values.
+`finetune-kit inspect-data --train reviews.csv` (or `--source hf:...`) lists the columns, row counts,
+label values and a suggested mapping without printing any row text.
+
+**Hugging Face datasets.** Use `--source hf:<id>[:<config>]` instead of `--train`, optionally with
+`--revision <branch|tag|sha>`; `new` pins the exact revision, so later stages see the same data.
+Class-label integers become label names. The dataset files at the pinned revision are downloaded
+into `~/.finetune-kit/hf-cache/` (not `~/.cache/huggingface/`), so a pinned dataset also loads offline.
+Private or gated datasets use your existing Hugging Face login (`hf auth login` or
+`huggingface-cli login`); finetune-kit never asks for or stores a token.
+
+**How splits are made.**
+
+- One file (`--train` only): `check-data` splits it 80/10/10, stratified by label and grouped by
+  `group_id` when present. Or give `--train --val --test` yourself.
+- Hugging Face: published `train`, `validation` and `test` splits are used as they are (`valid`,
+  `val` and `dev` count as validation). A missing, empty or unlabelled validation or test split is
+  carved from train (a split where only some rows lack labels is refused); with only `train`, it
+  is split 80/10/10. `data-report.json` records `split_origin`, `ignored_splits` and a warning
+  "<role> carved from train: <reason>" for each carved part.
+
+Rows over the model's max length are truncated and counted; `check-data` warns beforehand.
 
 ## Where things live
 

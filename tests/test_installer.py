@@ -278,6 +278,17 @@ def test_command_prompts_follow_the_rules(tmp_path, stage):
     assert "Next command" in finish or "next command" in finish
 
 
+@pytest.mark.parametrize("ai,path", [
+    ("claude", ".claude/skills/finetune-kit-setup/SKILL.md"),
+    ("codex", ".agents/skills/finetune-kit-setup/SKILL.md"),
+    ("cursor", ".cursor/commands/finetune-kit.setup.md"),
+])
+def test_setup_prompt_mentions_data_sources(tmp_path, ai, path):
+    installer.install(tmp_path, ai, force=False)
+    text = (tmp_path / path).read_text()
+    assert "inspect-data" in text and "--source hf:" in text
+
+
 def test_research_and_promote_specifics(tmp_path):
     installer.install(tmp_path, "claude", force=False)
     skills = tmp_path / ".claude/skills"

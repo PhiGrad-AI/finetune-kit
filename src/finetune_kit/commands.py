@@ -5,7 +5,7 @@ import math
 import shutil
 from pathlib import Path
 
-from finetune_kit import data, experiment as ex, metrics, store
+from finetune_kit import data, experiment as ex, metrics, sources, store
 from finetune_kit.paths import vault_dir
 
 STREAK_STOP = 10
@@ -39,10 +39,11 @@ def _metric(cfg: ex.ExperimentConfig, ref: ex.MetricRef, root: Path) -> metrics.
 
 
 def setup_experiment(
-    root: Path, name: str, *, task: str, model: str, train: str, val: str | None, test: str | None,
-    metric: str, metric_params: dict, guardrail: str | None, guardrail_params: dict,
+    root: Path, name: str, *, task: str, model: str, train: str | None = None,
+    val: str | None = None, test: str | None = None, source: str | None = None,
+    revision: str | None = None, metric: str, metric_params: dict, guardrail: str | None, guardrail_params: dict,
     positive_class: str | None, seeds: int, max_runs: int, max_hours: float, subset: int | None,
-    custom_metric: str | None, direction: str | None,
+    custom_metric: str | None, direction: str | None, columns: dict | None = None,
 ) -> Path:
     from finetune_kit.profiles import load_profiles
 
@@ -53,13 +54,18 @@ def setup_experiment(
         raise ValueError(f"--task must be seq-cls or token-cls, not {task!r}")
     if seeds < 2:
         raise ValueError("--seeds must be at least 2: the noise floor needs a standard deviation")
+    ex.check_data_choice(train, source, val, test)
     if (val is None) != (test is None):
         raise ValueError("give both --val and --test, or neither (the kit then splits --train)")
+    if revision is not None and not source:
+        raise ValueError("--revision only applies with --source")
     profiles = load_profiles(root)
     if model not in profiles:
         raise ValueError(f"unknown model {model!r}; see `finetune-kit models`")
     if task not in profiles[model].tasks:
         raise ValueError(f"model {model!r} does not support {task}")
+    if source:
+        sources.parse_hf(source)  # one-line error for a malformed spec
     for label, p in (("train", train), ("val", val), ("test", test)):
         if p is not None and not _resolve(root, p).is_file():
             raise FileNotFoundError(f"--{label} file not found: {p}")
@@ -92,8 +98,17 @@ def setup_experiment(
     if cm is not None and cm.func not in (metric, guardrail):
         raise ValueError(f"--metric or --guardrail must be the custom metric {cm.func!r}")
 
+    pinned = sources.pin_revision(source, revision) if source else None
+    cols = columns or {}
+    data_cfg = ex.DataPaths(
+        train=train, val=val, test=test, source=source, revision=pinned, columns=cols
+    )
+    # Load every split the way check-data will, so mapping and row errors surface before anything is written.
+    got = sources.resolve_source(data_cfg, root, task, 0.1)
     if task == "seq-cls":
-        labels = data.label_map(data.load_rows(_resolve(root, train), task), task)
+        data.check_label_column(got.train + got.val + got.test)
+        train_rows = got.train if source else sources.load_train(data_cfg, root, task)
+        labels = data.label_map(train_rows, task)
         if positive_class is not None and positive_class not in labels:
             raise ValueError(f"--positive-class {positive_class!r} is not a train label {labels}")
         if positive_class is None and len(labels) > 2 and any(m.needs_positive for m in resolved):
@@ -107,7 +122,7 @@ def setup_experiment(
     profile = profiles[model]
     cfg = ex.ExperimentConfig(
         name=name, task=task, model=model,
-        data=ex.DataPaths(train=train, val=val, test=test),
+        data=data_cfg,
         objective=ex.MetricRef(metric=metric, params=metric_params),
         guardrail=ex.MetricRef(metric=guardrail, params=guardrail_params) if guardrail else None,
         positive_class=positive_class, custom_metric=cm, seeds=seeds,
@@ -147,6 +162,16 @@ def _refuse_bad_splits(report: dict, task: str, labels: list[str], val: list[dic
         raise ValueError("data check failed (nothing was frozen): " + "; ".join(problems))
 
 
+def _carve_reason(origin: str, hf: bool) -> str | None:
+    prefix = "carved from train"
+    if not origin.startswith(prefix):
+        return None
+    rest = origin[len(prefix):].strip()
+    if rest.startswith("(") and rest.endswith(")"):
+        rest = rest[1:-1]
+    return rest or ("no published split" if hf else "single file given")
+
+
 def check_data(exp_dir: Path, *, resplit: bool = False, val_frac: float = 0.1) -> dict:
     exp_dir = Path(exp_dir)
     root = store.project_root(exp_dir)
@@ -161,12 +186,10 @@ def check_data(exp_dir: Path, *, resplit: bool = False, val_frac: float = 0.1) -
         _refuse_resplit_after_noise(exp_dir)
     # Everything that can fail (data errors, tokenizer download) runs before anything is written.
     task = cfg.task
-    train = data.load_rows(_resolve(root, cfg.data.train), task)
-    if cfg.data.val and cfg.data.test:
-        val = data.load_rows(_resolve(root, cfg.data.val), task)
-        test = data.load_rows(_resolve(root, cfg.data.test), task)
-    else:
-        train, val, test = data.make_splits(train, task, frac=(1 - 0.1 - val_frac, val_frac, 0.1))
+    got = sources.resolve_source(cfg.data, root, task, val_frac)
+    train, val, test, split_origin = got.train, got.val, got.test, got.origin
+    if task == "seq-cls":
+        data.check_label_column(train + val + test)
     profile = store.profile_for(cfg, {}, root)
     report = data.check(
         exp_dir, task, profile.max_len, load_tokenizer(profile),
@@ -184,6 +207,12 @@ def check_data(exp_dir: Path, *, resplit: bool = False, val_frac: float = 0.1) -
     )
     if warning:
         report["warnings"].append(warning)
+    report["split_origin"] = split_origin
+    report["ignored_splits"] = got.ignored_splits
+    for role in ("val", "test"):
+        reason = _carve_reason(split_origin[role], bool(cfg.data.source))
+        if reason:
+            report["warnings"].append(f"{role} carved from train: {reason}")
 
     with ex.state_lock(exp_dir):
         if splits.exists():
