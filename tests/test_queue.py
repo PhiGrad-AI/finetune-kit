@@ -199,12 +199,10 @@ def test_null_objective_is_crash(exp_with_noise, runner):
 
 def test_budget_exhausted(exp_with_noise, runner):
     cfg, _, st = ex.load(exp_with_noise)
-    cfg.budget.max_runs = 1
-    (exp_with_noise / "experiment.yaml").write_text(
-        __import__("yaml").safe_dump(cfg.model_dump(mode="json"))
-    )
     st.runs_used = 1
     ex.save_state(exp_with_noise, st)
+    cfg.budget.max_runs = 1
+    _write_cfg(exp_with_noise, cfg)
     r = _run(runner, exp_with_noise, {"dropout": 0.2})
     assert r.exit_code == 2 and "budget" in _out(r)["error"]
 
@@ -212,9 +210,7 @@ def test_budget_exhausted(exp_with_noise, runner):
 def test_budget_counts_queued_runs(exp_with_noise, runner):
     cfg, _, _ = ex.load(exp_with_noise)
     cfg.budget.max_runs = 1
-    (exp_with_noise / "experiment.yaml").write_text(
-        __import__("yaml").safe_dump(cfg.model_dump(mode="json"))
-    )
+    _write_cfg(exp_with_noise, cfg)
     assert _run(runner, exp_with_noise, {"dropout": 0.2}).exit_code == 0
     r = _run(runner, exp_with_noise, {"dropout": 0.3})
     assert r.exit_code == 2 and "budget" in _out(r)["error"]
@@ -430,7 +426,12 @@ def test_detached_daemon_end_to_end(exp, runner, monkeypatch):
 
 
 def _write_cfg(exp_dir, cfg):
+    """Rewrite experiment.yaml as if it had been set so before the noise floor (checksum re-pinned)."""
     (exp_dir / "experiment.yaml").write_text(__import__("yaml").safe_dump(cfg.model_dump(mode="json")))
+    st = ex.load(exp_dir)[2]
+    if ex.CONFIG_KEY in st.checksums:
+        st.checksums[ex.CONFIG_KEY] = ex._sha(exp_dir / "experiment.yaml")
+        ex.save_state(exp_dir, st)
 
 
 def test_noise_refused_once_done(exp_with_noise, runner):  # 1
@@ -672,3 +673,29 @@ def test_mark_failed_restores_finalizing_outcome(exp_with_noise, runner):
     req = _request(exp_with_noise, rid)
     assert req["status"] == "done" and req["verdict"] == "keep" and "outcome" not in req
     assert ex.load(exp_with_noise)[2].runs_used == 1
+
+
+def test_noise_records_experiment_and_profile_checksums(exp, runner):  # final review 5
+    assert _run(runner, exp, {}, "--stage", "noise").exit_code == 0
+    assert {"experiment.yaml", "model-profile"} <= set(ex.load(exp)[2].checksums)
+
+
+def test_edited_experiment_yaml_refused_after_noise(exp_with_noise, runner):  # final review 5
+    cfg = ex.load(exp_with_noise)[0]
+    cfg.budget.max_runs = 999
+    (exp_with_noise / "experiment.yaml").write_text(__import__("yaml").safe_dump(cfg.model_dump(mode="json")))
+    r = _run(runner, exp_with_noise, {"dropout": 0.2})
+    assert r.exit_code == 2 and "experiment.yaml (changed)" in _out(r)["error"]
+
+
+def test_edited_model_profile_refused_after_noise(exp_with_noise, runner, monkeypatch):  # final review 5
+    import dataclasses
+
+    from finetune_kit import profiles
+
+    real = profiles._test_profiles
+    monkeypatch.setattr(profiles, "_test_profiles", lambda: {
+        k: dataclasses.replace(v, lr_range=(1e-6, 1.0)) for k, v in real().items()
+    })
+    r = _run(runner, exp_with_noise, {"dropout": 0.2})
+    assert r.exit_code == 2 and "model profile 'tiny-bert' (changed)" in _out(r)["error"]

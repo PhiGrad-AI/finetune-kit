@@ -175,3 +175,31 @@ def test_catalog_defaults_match_trainer_defaults():
     assert d["lora_alpha"] == 16 and d["ema"] == 0.0 and d["batch"] == 8
     assert d["asl_gamma_neg"] == 4 and d["asl_clip"] == 0.05 and d["dice_ce_weight"] == 0.5
     assert d["hidden_dropout"] is None and d["attn_dropout"] is None
+
+
+def test_partial_project_override_merges(tmp_path):
+    (tmp_path / ".finetune-kit").mkdir()
+    (tmp_path / ".finetune-kit" / "models.yaml").write_text(yaml.safe_dump({"roberta-base": {"lr_default": 3e-5}}))
+    p = load_profiles(tmp_path)["roberta-base"]
+    shipped = load_profiles(None)["roberta-base"]
+    assert p.lr_default == 3e-5 and p.hf_id == shipped.hf_id and p.revision == shipped.revision
+
+
+def test_new_project_profile_missing_fields_named(tmp_path):
+    import pytest
+
+    (tmp_path / ".finetune-kit").mkdir()
+    (tmp_path / ".finetune-kit" / "models.yaml").write_text(yaml.safe_dump({"mine": {"hf_id": "acme/mine"}}))
+    with pytest.raises(ValueError, match=r"profile 'mine'.*missing.*'lr_default'.*'revision'"):
+        load_profiles(tmp_path)
+
+
+def test_add_profile_refuses_existing_key(tmp_path):
+    import pytest
+
+    cfg = {"model_type": "x", "max_position_embeddings": 128}
+    with pytest.raises(ValueError, match="'roberta-base' already exists"):
+        add_profile(tmp_path, "FacebookAI/roberta-base", False, config=cfg)  # shipped
+    add_profile(tmp_path, "acme/mine", False, config=cfg)
+    with pytest.raises(ValueError, match="'mine' already exists"):
+        add_profile(tmp_path, "other/mine", False, config=cfg)  # project

@@ -123,6 +123,7 @@ def run(
                 overrides = {} if state.lr_scan_best is None else {"lr": state.lr_scan_best}
                 if not _requests(exp_dir, "noise"):
                     ex.record_checksums(exp_dir, root)
+                    ex.record_baseline_checksums(exp_dir, profile)
                 state = ex.load(exp_dir)[2]
                 state.model_locked = True
                 ex.save_state(exp_dir, state)

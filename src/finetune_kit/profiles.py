@@ -1,6 +1,6 @@
 """Model profiles: shipped YAML, project overrides, and generic profiles for new models."""
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 
 import yaml
@@ -29,11 +29,20 @@ class ModelProfile:
     notes: str = ""
 
 
+_REQUIRED = [f.name for f in fields(ModelProfile) if f.name != "key" and f.default is MISSING
+             and f.default_factory is MISSING]
+
+
 def _from_dict(key: str, d: dict) -> ModelProfile:
+    if not isinstance(d, dict):
+        raise ValueError(f"profile {key!r}: expected a mapping of fields")
     names = {f.name for f in fields(ModelProfile)} - {"key"}
     extra = set(d) - names
     if extra:
         raise ValueError(f"profile {key!r}: unknown field(s) {sorted(extra)}")
+    missing = sorted(set(_REQUIRED) - set(d))
+    if missing:
+        raise ValueError(f"profile {key!r}: missing required field(s) {missing}")
     d = dict(d)
     d["lr_range"] = tuple(float(x) for x in d["lr_range"])
     d["lr_default"] = float(d["lr_default"])
@@ -70,9 +79,12 @@ def _test_profiles() -> dict[str, ModelProfile]:
 
 
 def load_profiles(project_root: Path | None) -> dict[str, ModelProfile]:
-    raw = _read_yaml(SHIPPED)
+    shipped = _read_yaml(SHIPPED)
+    raw = dict(shipped)
     if project_root is not None:
-        raw.update(_read_yaml(Path(project_root) / ".finetune-kit" / "models.yaml"))
+        for k, v in _read_yaml(Path(project_root) / ".finetune-kit" / "models.yaml").items():
+            # a project entry overrides a shipped profile per field; a new key must be complete
+            raw[k] = {**shipped.get(k, {}), **v} if isinstance(v, dict) else v
     profiles = {k: _from_dict(k, v) for k, v in raw.items()}
     if os.environ.get("FINETUNE_KIT_TEST_PROFILES") == "1":
         profiles.update(_test_profiles())
@@ -91,6 +103,12 @@ def add_profile(
     `config` is the model's HF config.json as a dict; when omitted, config.json (and the
     current commit sha) is fetched from the Hub. No weights are downloaded.
     """
+    key = _slug(hf_id)
+    path = Path(project_root) / ".finetune-kit" / "models.yaml"
+    if key in _read_yaml(SHIPPED) or key in _read_yaml(path):
+        raise ValueError(
+            f"model profile {key!r} already exists; edit .finetune-kit/models.yaml to change it"
+        )
     revision = "main"
     if config is None:
         import json
@@ -103,14 +121,13 @@ def add_profile(
     max_len = mpe if config.get("model_type") == "modernbert" and mpe > 512 else min(mpe, 512)
     bert_like = "hidden_dropout_prob" in config and "attention_probs_dropout_prob" in config
     profile = ModelProfile(
-        key=_slug(hf_id), hf_id=hf_id, revision=revision, tasks=["seq-cls", "token-cls"],
+        key=key, hf_id=hf_id, revision=revision, tasks=["seq-cls", "token-cls"],
         lr_default=3e-5, lr_range=(1e-5, 1e-4), max_len=max_len, batch=8, micro=4,
         trust_remote_code=trust_remote_code,
         dropout_keys={k: list(v) for k, v in BERT_DROPOUT.items()} if bert_like else {},
         lora_targets=list(BERT_LORA) if bert_like else [],
         notes="generic: lr-scan required",
     )
-    path = Path(project_root) / ".finetune-kit" / "models.yaml"
     data = _read_yaml(path)
     data[profile.key] = to_dict(profile)
     path.parent.mkdir(parents=True, exist_ok=True)
