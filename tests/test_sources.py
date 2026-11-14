@@ -428,9 +428,55 @@ def test_partially_unlabelled_test_refused(hf_fake):
     )
 
 
+def test_id_null_generates_ids(tmp_path):
+    p = tmp_path / "train.csv"
+    p.write_text("id,text,label\n7,hi,0\n7,yo,1\n", encoding="utf-8")
+    rows = data.load_rows(p, "seq-cls", columns={"id": None})
+    assert [r["id"] for r in rows] == ["train-000001", "train-000002"]
 
 
+def test_empty_or_null_id_refused(tmp_path):
+    p = tmp_path / "train.csv"
+    p.write_text("id,text,label\n7,hi,0\n,yo,1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^train.csv row 2: id is empty$"):
+        data.load_rows(p, "seq-cls")
+    rows = [{"pk": "a", "text": "x", "label": 0}, {"pk": None, "text": "y", "label": 1}]
+    with pytest.raises(ValueError, match=r"^hf:x/y train row 2: id is empty$"):
+        sources.normalize(rows, "seq-cls", {"id": "pk"}, "train", "hf:x/y train")
+    j = tmp_path / "t.jsonl"
+    j.write_text('{"id": "a", "text": "x", "label": 0}\n{"id": null, "text": "y", "label": 1}\n')
+    with pytest.raises(ValueError, match="t.jsonl line 2: id is empty"):
+        data.load_rows(j, "seq-cls")
 
+
+def test_only_id_may_be_null(tmp_path):
+    p = tmp_path / "train.csv"
+    p.write_text("text,label\nhi,0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="only id may be null"):
+        data.load_rows(p, "seq-cls", columns={"label": None})
+
+
+def test_label_column_looks_like_text():
+    secret = "SENTINEL-text-value-that-is-quite-long-indeed-0"
+    rows = [{"id": "a", "text": "t", "label": secret}, {"id": "b", "text": "t", "label": "x"}]
+    with pytest.raises(ValueError) as e:
+        data.check_label_column(rows)
+    assert secret not in str(e.value)
+    assert "is --columns mapping the text column as the label?" in str(e.value)
+    many = [{"id": str(i), "text": "t", "label": f"l{i}"} for i in range(201)]
+    with pytest.raises(ValueError, match="label column has 201 distinct values"):
+        data.check_label_column(many)
+    data.check_label_column(many[:200])  # 200 short labels are fine
+
+
+def test_inspect_ragged_csv_skips_none_key(tmp_path):
+    (tmp_path / "t.csv").write_text(
+        "text,label\n" + "".join(f"some text {i},{i % 2},extra,more\n" for i in range(6)), encoding="utf-8"
+    )
+    r = sources.inspect(None, "t.csv", None, None, tmp_path)
+    assert set(r["columns"]) == {"text", "label"}
+    assert "tokens" not in r["suggested_columns"]
+    json.dumps(r)
 
 
 def test_load_dataset_uses_kit_cache_snapshot(monkeypatch, tmp_path):

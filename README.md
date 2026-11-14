@@ -97,6 +97,7 @@ finetune-kit new demo --task seq-cls --model roberta-base --train reviews.csv \
 ```
 
 Keys are `text`, `label`, `id`, `tokens`, `tags`, `group_id`; omit it when the names already match.
+`"id": null` ignores an `id` column and generates ids instead; a used `id` column must have no empty values.
 `finetune-kit inspect-data --train reviews.csv` (or `--source hf:...`) lists the columns, row counts,
 label values and a suggested mapping without printing any row text.
 

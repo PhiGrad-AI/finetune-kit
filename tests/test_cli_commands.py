@@ -539,3 +539,65 @@ def test_cli_inspect_data_hf_and_error(runner, hf_fake):
     assert out["revision"] == "abc123" and out["splits"]["validation"]["role"] == "val"
     r = runner.invoke(app, ["inspect-data"])
     assert r.exit_code == 2 and _out(r) == {"error": "give --train or --source"}
+
+
+# ---- final-review fixes ----
+
+def test_new_token_cls_bad_mapping_writes_nothing(runner, tok_jsonl, tmp_path):
+    rows = [{"id": f"t{i}", "words": ["a", "Ann"], "tags": ["O", "B-PER"]} for i in range(20)]
+    tok_jsonl(rows, "tr.jsonl")
+    r = runner.invoke(app, ["new", "n", "--task", "token-cls", "--model", "tiny-bert", "--train", "tr.jsonl",
+                            "--metric", "entity_f1", "--columns", '{"tokens":"wrds"}'])
+    assert r.exit_code == 2 and "no column 'wrds'" in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists() or not list((tmp_path / "experiments").iterdir())
+
+
+def test_new_bad_mapping_in_local_test_file_writes_nothing(runner, tmp_path):
+    (tmp_path / "tr.csv").write_text("prompt,y\n" + "".join(f"m {i},{i % 2}\n" for i in range(20)))
+    (tmp_path / "va.csv").write_text("prompt,y\nm,0\nn,1\n")
+    (tmp_path / "te.csv").write_text("text,y\nm,0\nn,1\n")
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--train", "tr.csv",
+                            "--val", "va.csv", "--test", "te.csv", "--metric", "macro_f1",
+                            "--columns", '{"text":"prompt","label":"y"}'])
+    assert r.exit_code == 2 and "te.csv: no column 'prompt'" in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists() or not list((tmp_path / "experiments").iterdir())
+
+
+def _text_as_label_csv(path, secret):
+    path.write_text("prompt,y\n" + "".join(f"{secret} {i},{i % 2}\n" for i in range(60)))
+
+
+def test_new_refuses_text_column_as_label(runner, tmp_path):
+    secret = "SENTINEL-row-text-zq81 a sentence well over forty characters"
+    _text_as_label_csv(tmp_path / "tr.csv", secret)
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--train", "tr.csv",
+                            "--metric", "macro_f1", "--positive-class", "x",
+                            "--columns", '{"text":"y","label":"prompt"}'])
+    assert r.exit_code == 2
+    assert secret not in r.stdout
+    assert "is --columns mapping the text column as the label?" in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists() or not list((tmp_path / "experiments").iterdir())
+
+
+def test_check_data_refuses_text_column_as_label(runner, tmp_path):
+    secret = "SENTINEL-row-text-zq81-but-longer-than-forty-characters"
+    (tmp_path / "tr.csv").write_text("prompt,y\n" + "".join(f"msg {i},{i % 2}\n" for i in range(60)))
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--train", "tr.csv",
+                            "--metric", "macro_f1", "--columns", '{"text":"prompt","label":"y"}'])
+    assert r.exit_code == 0, r.stdout
+    rows = [f"msg {i},{i % 2}" for i in range(60)]
+    rows[5] = f"msg 5,{secret}"
+    (tmp_path / "tr.csv").write_text("prompt,y\n" + "\n".join(rows) + "\n")
+    r = runner.invoke(app, ["check-data", "001"])
+    assert r.exit_code == 2 and secret not in r.stdout
+    assert "label column has" in _out(r)["error"]
+    assert not (_exp_dir(tmp_path) / "splits").exists()
+
+
+def test_new_id_null_mapping_saved(runner, tmp_path):
+    (tmp_path / "tr.csv").write_text("id,text,label\n" + "".join(f"1,m {i},{i % 2}\n" for i in range(60)))
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--train", "tr.csv",
+                            "--metric", "macro_f1", "--columns", '{"id": null}'])
+    assert r.exit_code == 0, r.stdout
+    assert ex.load(_exp_dir(tmp_path))[0].data.columns == {"id": None}
+    assert runner.invoke(app, ["check-data", "001"]).exit_code == 0
