@@ -331,6 +331,175 @@ def status(exp: Optional[str] = typer.Argument(None, help="Only show runs of thi
     emit({"queue": items, "running": running, "worker_pid": pid})
 
 
+@app.command()
+def new(
+    name: str = typer.Argument(..., help="Experiment name."),
+    task: str = typer.Option(..., "--task", help="seq-cls | token-cls"),
+    model: str = typer.Option(..., "--model", help="Model profile key (see `models`)."),
+    train: str = typer.Option(..., "--train", help="Train JSONL."),
+    val: Optional[str] = typer.Option(None, "--val", help="Val JSONL (with --test)."),
+    test: Optional[str] = typer.Option(None, "--test", help="Test JSONL (goes to the vault)."),
+    metric: str = typer.Option(..., "--metric", help="Objective metric."),
+    metric_params: str = typer.Option("{}", "--metric-params", help="JSON object."),
+    guardrail: Optional[str] = typer.Option(None, "--guardrail", help="Guardrail metric."),
+    guardrail_params: str = typer.Option("{}", "--guardrail-params", help="JSON object."),
+    positive_class: Optional[str] = typer.Option(None, "--positive-class"),
+    custom_metric: Optional[str] = typer.Option(None, "--custom-metric", help="PATH:FUNC (seq-cls)."),
+    direction: Optional[str] = typer.Option(None, "--direction", help="max | min (custom metric)."),
+    seeds: int = typer.Option(3, "--seeds"),
+    max_runs: int = typer.Option(40, "--max-runs"),
+    max_hours: float = typer.Option(24, "--max-hours"),
+    subset: Optional[int] = typer.Option(None, "--subset", help="Research train subset size."),
+) -> None:
+    """Create experiments/NNN-name with its config and recorded versions."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        d = cmd.setup_experiment(
+            Path.cwd(), name, task=task, model=model, train=train, val=val, test=test, metric=metric,
+            metric_params=cmd.parse_params(metric_params, "--metric-params"), guardrail=guardrail,
+            guardrail_params=cmd.parse_params(guardrail_params, "--guardrail-params"),
+            positive_class=positive_class, seeds=seeds, max_runs=max_runs, max_hours=max_hours,
+            subset=subset, custom_metric=custom_metric, direction=direction,
+        )
+    emit({"experiment": d.name, "path": str(d)})
+
+
+models_app = typer.Typer(add_completion=False, invoke_without_command=True, help="List or add model profiles.")
+app.add_typer(models_app, name="models")
+
+
+@models_app.callback()
+def models(ctx: typer.Context, task: Optional[str] = typer.Option(None, "--task", help="Filter by task.")) -> None:
+    """List model profiles (`models add HF_ID` registers a new one)."""
+    from finetune_kit.profiles import load_profiles
+
+    if ctx.invoked_subcommand is not None:
+        return
+    with _errors():
+        profs = load_profiles(Path.cwd())
+    emit({"models": [
+        {"key": p.key, "hf_id": p.hf_id, "tasks": p.tasks, "max_len": p.max_len, "lr_default": p.lr_default,
+         "lr_range": list(p.lr_range), "revision": p.revision, "notes": p.notes}
+        for p in profs.values() if task is None or task in p.tasks
+    ]})
+
+
+@models_app.command("add")
+def models_add(
+    hf_id: str = typer.Argument(..., help="Hugging Face model id."),
+    trust_remote_code: bool = typer.Option(False, "--trust-remote-code"),
+) -> None:
+    """Register a generic profile in .finetune-kit/models.yaml (config.json only, no weights)."""
+    from finetune_kit.profiles import _to_dict, add_profile
+
+    with _errors():
+        p = add_profile(Path.cwd(), hf_id, trust_remote_code)
+    emit({"key": p.key, **_to_dict(p)})
+
+
+@app.command("metrics")
+def metrics_cmd(task: Optional[str] = typer.Option(None, "--task", help="Filter by task.")) -> None:
+    """List the built-in metrics."""
+    from finetune_kit import metrics
+
+    ms = [m for t in (["seq-cls", "token-cls"] if task is None else [task]) for m in metrics.list_for(t)]
+    seen = {}
+    for m in ms:
+        seen[m.name] = m
+    emit({"metrics": [
+        {"name": m.name, "tasks": list(m.tasks), "direction": m.direction, "min_delta": m.min_delta,
+         "params": m.params, "needs_positive": m.needs_positive, "constrained": m.constrained}
+        for m in seen.values()
+    ]})
+
+
+@app.command("check-data")
+def check_data(
+    exp: str = typer.Argument(..., help="Experiment: number, name or path."),
+    resplit: bool = typer.Option(False, "--resplit", help="Discard frozen splits and reset state."),
+    val_frac: float = typer.Option(0.1, "--val-frac", help="Validation share when splitting (test stays 0.1)."),
+) -> None:
+    """Validate data, split and freeze it (test goes to the vault), write data-report.json."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        report = cmd.check_data(_exp(exp), resplit=resplit, val_frac=val_frac)
+    emit(report)
+
+
+@app.command()
+def catalog(exp: str = typer.Argument(..., help="Experiment: number, name or path.")) -> None:
+    """List tunable hyperparameters with recommendations for this experiment's data."""
+    from finetune_kit import experiment as ex
+    from finetune_kit import store
+    from finetune_kit.catalog import listing
+
+    with _errors():
+        exp_dir = _exp(exp)
+        cfg, _, _ = ex.load(exp_dir)
+        rp = exp_dir / "data-report.json"
+        report = json.loads(rp.read_text()) if rp.is_file() else {}
+        profile = store.profile_for(cfg, {}, store.project_root(exp_dir))
+        emit({"catalog": listing(cfg.task, profile, report, cfg.objective.metric)})
+
+
+space_app = typer.Typer(add_completion=False, no_args_is_help=True, help="Search space.")
+app.add_typer(space_app, name="space")
+
+
+@space_app.command("commit")
+def space_commit(
+    exp: str = typer.Argument(..., help="Experiment: number, name or path."),
+    tunable: str = typer.Option(..., "--tunable", help="Comma-separated hyperparameter names."),
+    losses: str = typer.Option("ce", "--losses", help="Comma-separated allowed losses."),
+) -> None:
+    """Commit (or re-commit, next round) the tunable hyperparameters and losses."""
+    from finetune_kit import experiment as ex
+
+    with _errors():
+        exp_dir = _exp(exp)
+        space = ex.SearchSpace(
+            round=0, tunable=[t.strip() for t in tunable.split(",") if t.strip()],
+            losses=[l.strip() for l in losses.split(",") if l.strip()],
+        )
+        with ex.state_lock(exp_dir):
+            state = ex.commit_space(exp_dir, space)
+    emit({"round": state.round, "tunable": space.tunable, "losses": space.losses})
+
+
+@app.command()
+def compare(exp: str = typer.Argument(..., help="Experiment: number, name or path.")) -> None:
+    """Best run, noise floor, non-keep streak, budget left, stop flag and every result row."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        emit(cmd.compare(_exp(exp)))
+
+
+@app.command()
+def misses(
+    exp: str = typer.Argument(..., help="Experiment: number, name or path."),
+    run_id: str = typer.Argument(..., help="Run id, e.g. r007."),
+    k: int = typer.Option(20, "--k", help="Rows per list."),
+) -> None:
+    """Worst val errors of the run's best seed (val only, never the test vault)."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        emit(cmd.misses(_exp(exp), run_id, k))
+
+
+@app.command()
+def report(exp: str = typer.Argument(..., help="Experiment: number, name or path.")) -> None:
+    """Write experiments/NNN/report.html (self-contained) and print its path."""
+    from finetune_kit import report as rep
+
+    with _errors():
+        path = rep.write_report(_exp(exp))
+    emit({"path": str(path)})
+
+
 @app.command("_worker", hidden=True)
 def _worker() -> None:
     """Detached queue worker (started by `run`; exits when the queue is empty)."""
