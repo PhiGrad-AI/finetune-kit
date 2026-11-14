@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from finetune_kit import catalog
 
@@ -21,10 +21,28 @@ class TamperError(Exception):
     pass
 
 
+def check_data_choice(train, source, val, test) -> None:
+    """Exactly one of train/source; val and test only go with local files. One-line messages."""
+    if train and source:
+        raise ValueError("give --train or --source, not both")
+    if not train and not source:
+        raise ValueError("give --train or --source")
+    if source and (val or test):
+        raise ValueError("--val and --test only apply with --train")
+
+
 class DataPaths(BaseModel):
-    train: str
+    train: str | None = None
     val: str | None = None
     test: str | None = None
+    source: str | None = None
+    revision: str | None = None
+    columns: dict[str, str | None] = {}  # {"id": null} means generate ids
+
+    @model_validator(mode="after")
+    def _one_source(self):
+        check_data_choice(self.train, self.source, self.val, self.test)
+        return self
 
 
 class MetricRef(BaseModel):

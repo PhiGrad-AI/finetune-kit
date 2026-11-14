@@ -358,9 +358,11 @@ def new(
     name: str = typer.Argument(..., help="Experiment name."),
     task: str = typer.Option(..., "--task", help="seq-cls | token-cls"),
     model: str = typer.Option(..., "--model", help="Model profile key (see `models`)."),
-    train: str = typer.Option(..., "--train", help="Train JSONL."),
-    val: Optional[str] = typer.Option(None, "--val", help="Val JSONL (with --test)."),
-    test: Optional[str] = typer.Option(None, "--test", help="Test JSONL (goes to the vault)."),
+    train: Optional[str] = typer.Option(None, "--train", help="Train JSONL, CSV, TSV or Parquet."),
+    source: Optional[str] = typer.Option(None, "--source", help="Hugging Face dataset: hf:<id>[:<config>]."),
+    revision: Optional[str] = typer.Option(None, "--revision", help="Branch, tag or sha for --source (stored as a sha)."),
+    val: Optional[str] = typer.Option(None, "--val", help="Val file (with --test)."),
+    test: Optional[str] = typer.Option(None, "--test", help="Test file (goes to the vault)."),
     metric: str = typer.Option(..., "--metric", help="Objective metric."),
     metric_params: str = typer.Option("{}", "--metric-params", help="JSON object."),
     guardrail: Optional[str] = typer.Option(None, "--guardrail", help="Guardrail metric."),
@@ -372,17 +374,20 @@ def new(
     max_runs: int = typer.Option(40, "--max-runs"),
     max_hours: float = typer.Option(24, "--max-hours"),
     subset: Optional[int] = typer.Option(None, "--subset", help="Research train subset size."),
+    columns: str = typer.Option("{}", "--columns", help='JSON object mapping text/label/id/tokens/tags/group_id to your column names.'),
 ) -> None:
     """Create experiments/NNN-name with its config and recorded versions."""
     from finetune_kit import commands as cmd
 
     with _errors():
         d = cmd.setup_experiment(
-            Path.cwd(), name, task=task, model=model, train=train, val=val, test=test, metric=metric,
+            Path.cwd(), name, task=task, model=model, train=train, val=val, test=test, source=source,
+            revision=revision, metric=metric,
             metric_params=cmd.parse_params(metric_params, "--metric-params"), guardrail=guardrail,
             guardrail_params=cmd.parse_params(guardrail_params, "--guardrail-params"),
             positive_class=positive_class, seeds=seeds, max_runs=max_runs, max_hours=max_hours,
             subset=subset, custom_metric=custom_metric, direction=direction,
+            columns=cmd.parse_params(columns, "--columns"),
         )
     emit({"experiment": d.name, "path": str(d)})
 
@@ -448,6 +453,21 @@ def check_data(
     with _errors():
         report = cmd.check_data(_exp(exp), resplit=resplit, val_frac=val_frac)
     emit(report)
+
+
+@app.command("inspect-data")
+def inspect_data(
+    source: Optional[str] = typer.Option(None, "--source", help="Hugging Face dataset: hf:<id>[:<config>]."),
+    revision: Optional[str] = typer.Option(None, "--revision", help="Branch, tag or sha for --source."),
+    train: Optional[str] = typer.Option(None, "--train", help="Train JSONL, CSV, TSV or Parquet."),
+    val: Optional[str] = typer.Option(None, "--val", help="Val file."),
+    test: Optional[str] = typer.Option(None, "--test", help="Test file."),
+) -> None:
+    """Describe a dataset (splits, columns, label counts, suggested mapping) without printing its text."""
+    from finetune_kit import sources
+
+    with _errors():
+        emit(sources.inspect(source, train, val, test, Path.cwd(), revision))
 
 
 @app.command()
