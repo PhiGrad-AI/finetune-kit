@@ -159,6 +159,10 @@ def validate_config(
     if "lora_alpha" in config and config["lora_alpha"] != defaults.get("lora_alpha"):
         if config.get("lora_r", defaults.get("lora_r", 0)) == 0:
             errs.append("lora_alpha requires lora_r > 0")
+    if task == TOK and config.get("loss", defaults.get("loss")) == "dice" and config.get(
+        "crf", defaults.get("crf", False)
+    ):
+        errs.append("loss dice is not allowed with crf: true")
     return errs
 
 
