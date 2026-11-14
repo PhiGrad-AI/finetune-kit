@@ -211,6 +211,9 @@ def test_library_error_is_one_line_value_error(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("Dataset 'x/y' doesn't exist\nTraceback noise")
 
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda repo_id, **kw: "/nonexistent")
     monkeypatch.setattr(datasets, "load_dataset", boom)
     with pytest.raises(ValueError) as e:
         sources._load_dataset("x/y", "cfg", "abc")
@@ -371,3 +374,120 @@ def test_inspect_id_column_is_not_text(hf_fake):
     assert "text" not in r["suggested_columns"]
     assert r["tasks_possible"] == ["token-cls"]
     assert "id" not in r["label_candidates"] or r["label_candidates"]["id"]["n_distinct"] <= 2
+
+
+# ---- final-review fixes ----
+
+def _mapped_rows(n, label=lambda i: i % 2):
+    return [{"prompt": f"p{i}", "is_inj": label(i)} for i in range(n)]
+
+
+_MAP = {"text": "prompt", "label": "is_inj"}
+
+
+def test_mapped_label_missing_from_test_split_carves(hf_fake):
+    test = [{"prompt": f"q{i}"} for i in range(4)]
+    hf_fake({"train": _mapped_rows(40), "validation": _mapped_rows(4), "test": test},
+            features={"is_inj": _CL})
+    loaded = sources.load_hf("hf:a/b", "abc123", "seq-cls", _MAP)
+    assert loaded.test_unlabelled
+    tr, va, te, origin = sources.resolve_splits(loaded, "seq-cls", 0.1)
+    assert origin["test"] == "carved from train (published test has no labels)"
+    assert origin["val"] == "published" and len(te) == 4 and len(tr) == 36
+
+
+def test_val_without_label_column_carved(hf_fake):
+    val = [{"prompt": f"v{i}"} for i in range(4)]
+    hf_fake({"train": _mapped_rows(40), "validation": val, "test": _mapped_rows(4)},
+            features={"is_inj": _CL})
+    loaded = sources.load_hf("hf:a/b", "abc123", "seq-cls", _MAP)
+    tr, va, te, origin = sources.resolve_splits(loaded, "seq-cls", 0.1)
+    assert origin["val"] == "carved from train (published validation has no labels)"
+    assert origin["test"] == "published"
+    assert len(va) == 4 and len(tr) == 36 and all(r["label"] in ("benign", "injection") for r in va)
+
+
+def test_unlabelled_val_and_missing_test_both_carved(hf_fake):
+    hf_fake({"train": _seq_rows(100), "validation": _seq_rows(4, lambda i: -1)})
+    tr, va, te, origin = sources.resolve_splits(
+        sources.load_hf("hf:x/y", "abc123", "seq-cls", {}), "seq-cls", 0.1
+    )
+    assert origin["val"] == "carved from train (published validation has no labels)"
+    assert origin["test"] == "carved from train (no published test split)"
+    assert len(tr) + len(va) + len(te) == 100
+
+
+def test_partially_unlabelled_test_refused(hf_fake):
+    hf_fake({"train": _seq_rows(40), "validation": _seq_rows(4),
+             "test": _seq_rows(5, lambda i: -1 if i < 2 else i % 2)})
+    loaded = sources.load_hf("hf:x/y", "abc123", "seq-cls", {})
+    with pytest.raises(ValueError) as e:
+        sources.resolve_splits(loaded, "seq-cls", 0.1)
+    assert str(e.value) == (
+        "hf:x/y test split has 2 rows without labels (of 5); drop them from the dataset or use a split with labels"
+    )
+
+
+
+
+
+
+
+def test_load_dataset_uses_kit_cache_snapshot(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    from finetune_kit.paths import kit_home
+
+    calls = {}
+    snap = tmp_path / "snap"
+
+    def fake_snapshot(repo_id, **kw):
+        calls["snapshot"] = (repo_id, kw)
+        return str(snap)
+
+    class _Split:
+        features = {"label": _CL}
+
+        def to_list(self):
+            return [{"text": "a", "label": 0}]
+
+    def fake_load(path, name=None, **kw):
+        calls["load"] = (path, name, kw)
+        return {"train": _Split()}
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    monkeypatch.setattr(datasets, "load_dataset", fake_load)
+    out = sources._load_dataset("a/b", "cfg", "deadbeef")
+    cache = str(kit_home() / "hf-cache")
+    assert calls["snapshot"] == ("a/b", {"repo_type": "dataset", "revision": "deadbeef", "cache_dir": cache})
+    assert calls["load"] == (str(snap), "cfg", {"cache_dir": cache})
+    assert out == {"train": ([{"text": "a", "label": 0}], {"label": _CL})}
+
+
+def test_load_dataset_retries_offline(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    seen = []
+
+    def fake_snapshot(repo_id, **kw):
+        seen.append(kw.get("local_files_only", False))
+        if not kw.get("local_files_only"):
+            raise OSError("connection refused")
+        return str(tmp_path)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    monkeypatch.setattr(datasets, "load_dataset", lambda path, name=None, **kw: {})
+    assert sources._load_dataset("a/b", None, "deadbeef") == {}
+    assert seen == [False, True]
+
+
+def test_load_dataset_offline_failure_reports_original_error(monkeypatch):
+    import huggingface_hub
+
+    def fake_snapshot(repo_id, **kw):
+        raise OSError("not cached" if kw.get("local_files_only") else "connection refused\nmore")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    with pytest.raises(ValueError) as e:
+        sources._load_dataset("a/b", None, "deadbeef")
+    assert str(e.value) == "could not load hf:a/b: connection refused"

@@ -122,6 +122,7 @@ class Loaded:
     spec: str
     ignored_splits: list[str]
     test_unlabelled: bool
+    val_unlabelled: bool = False
 
 
 def parse_hf(spec: str) -> tuple[str, str | None]:
@@ -158,13 +159,28 @@ def _resolve_revision(repo_id: str, revision: str | None, config: str | None = N
     return sha
 
 
+def _snapshot(repo_id: str, revision: str, cache: str) -> str:
+    """Local snapshot dir of the dataset repo at `revision`, downloaded into the kit's cache."""
+    import huggingface_hub
+
+    kw = {"repo_type": "dataset", "revision": revision, "cache_dir": cache}
+    try:
+        return huggingface_hub.snapshot_download(repo_id, **kw)
+    except Exception as e:
+        try:  # offline: a snapshot already in the cache for this sha is enough
+            return huggingface_hub.snapshot_download(repo_id, **kw, local_files_only=True)
+        except Exception:
+            raise e from None
+
+
 def _load_dataset(repo_id: str, config: str | None, revision: str) -> dict[str, tuple[list[dict], dict]]:
+    # Every byte (repo files and the datasets arrow cache) lands under kit_home()/hf-cache.
+    cache = str(kit_home() / "hf-cache")
     try:
         import datasets
 
-        ds = datasets.load_dataset(
-            repo_id, config, revision=revision, cache_dir=str(kit_home() / "hf-cache")
-        )
+        path = _snapshot(repo_id, revision, cache)
+        ds = datasets.load_dataset(path, name=config, cache_dir=cache)
         return {name: (ds[name].to_list(), dict(ds[name].features)) for name in ds}
     except Exception as e:
         raise ValueError(f"could not load {_spec(repo_id, config)}: {_first_line(e)}") from e
@@ -210,19 +226,25 @@ def load_hf(spec: str, revision: str, task: str, columns: dict) -> Loaded:
     picked = pick_splits(list(raw))
     used = set(picked.values())
     out: dict[str, list[dict] | None] = {"train": None, "val": None, "test": None}
+    field = "label" if task == "seq-cls" else "tags"
     for role, split in picked.items():
         rows, features = raw[split]
+        cols = dict(columns)
+        col = cols.get(field, field)
+        if role != "train" and rows and not any(col in r for r in rows):
+            # A published val/test without the label column is unlabelled: it gets carved.
+            cols.pop(field, None)
         out[role] = normalize(
-            rows, task, columns, role, f"{spec} {split}", label_names(features, columns, task)
+            rows, task, cols, role, f"{spec} {split}", label_names(features, cols, task)
         )
-    unlabelled = out["test"] is not None and _all_unlabelled(out["test"], task)
     return Loaded(
         train=out["train"],
         val=out["val"],
         test=out["test"],
         spec=spec,
         ignored_splits=[n for n in raw if n not in used],
-        test_unlabelled=unlabelled,
+        test_unlabelled=bool(out["test"]) and _all_unlabelled(out["test"], task),
+        val_unlabelled=bool(out["val"]) and _all_unlabelled(out["val"], task),
     )
 
 
@@ -238,11 +260,24 @@ def _all_unlabelled(rows: list[dict], task: str) -> bool:
     )
 
 
+def _n_unlabelled(rows: list[dict], task: str) -> int:
+    if task == "seq-cls":
+        return sum(_missing(r.get("label")) for r in rows)
+    return sum(r.get("tags") is None or any(_missing(t) for t in r["tags"]) for r in rows)
+
+
 def resolve_splits(loaded: Loaded, task: str, val_frac: float) -> tuple[list, list, list, dict]:
     """Return train, val, test and split_origin, carving missing parts from train, then validate."""
     train, val, test = loaded.train, loaded.val, loaded.test
     origin = {"train": "published", "val": "published", "test": "published"}
-    val_missing = not val  # an empty published split counts as missing
+    for role, rows, unlabelled in (("val", val, loaded.val_unlabelled), ("test", test, loaded.test_unlabelled)):
+        n = 0 if not rows or unlabelled else _n_unlabelled(rows, task)
+        if n:
+            raise ValueError(
+                f"{loaded.spec} {role} split has {n} rows without labels (of {len(rows)}); "
+                "drop them from the dataset or use a split with labels"
+            )
+    val_missing = not val or loaded.val_unlabelled  # an empty published split counts as missing
     test_missing = not test
     carve_test = test_missing or loaded.test_unlabelled
     test_origin = (
@@ -250,13 +285,16 @@ def resolve_splits(loaded: Loaded, task: str, val_frac: float) -> tuple[list, li
         if test_missing
         else "carved from train (published test has no labels)"
     )
+    val_origin = (
+        "carved from train (published validation has no labels)" if val else "carved from train"
+    )
     if val_missing and carve_test:
         train, val, test = data.make_splits(train, task, frac=(1 - 0.1 - val_frac, val_frac, 0.1))
-        origin["val"] = "carved from train"
+        origin["val"] = val_origin
         origin["test"] = test_origin
     elif val_missing:
         train, val, _ = data.make_splits(train, task, frac=(1 - val_frac, val_frac, 0))
-        origin["val"] = "carved from train"
+        origin["val"] = val_origin
     elif carve_test:
         train, _, test = data.make_splits(train, task, frac=(0.9, 0, 0.1))
         origin["test"] = test_origin
