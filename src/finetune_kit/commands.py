@@ -127,6 +127,24 @@ def load_tokenizer(profile):
     )
 
 
+def _refuse_resplit_after_noise(exp_dir: Path) -> None:
+    if any(r["stage"] == "noise" for r in store.list_requests(exp_dir)):
+        raise ValueError("splits are baselined; start a new experiment to resplit the data")
+
+
+def _refuse_bad_splits(report: dict, task: str, labels: list[str], val: list[dict], test: list[dict]) -> None:
+    """Errors and unseen val/test labels would crash training or promote later: refuse before freezing."""
+    problems = list(report["errors"])
+    if report["unseen_labels"]:
+        problems.append(f"labels in val/test but not train: {report['unseen_labels']}")
+    if task == "token-cls":
+        tags = sorted({t for rows in (val, test) for r in rows for t in r["tags"]} - set(labels))
+        if tags:
+            problems.append(f"tags in val/test but not train: {tags}")
+    if problems:
+        raise ValueError("data check failed (nothing was frozen): " + "; ".join(problems))
+
+
 def check_data(exp_dir: Path, *, resplit: bool = False, val_frac: float = 0.1) -> dict:
     exp_dir = Path(exp_dir)
     root = store.project_root(exp_dir)
@@ -137,6 +155,8 @@ def check_data(exp_dir: Path, *, resplit: bool = False, val_frac: float = 0.1) -
     frozen_msg = "splits already frozen; --resplit discards them and resets the experiment state"
     if splits.exists() and not resplit:
         raise ValueError(frozen_msg)
+    if resplit:
+        _refuse_resplit_after_noise(exp_dir)
     # Everything that can fail (data errors, tokenizer download) runs before anything is written.
     task = cfg.task
     train = data.load_rows(_resolve(root, cfg.data.train), task)
@@ -151,6 +171,7 @@ def check_data(exp_dir: Path, *, resplit: bool = False, val_frac: float = 0.1) -
         {"train": train, "val": val, "test": test},
     )
     labels = data.label_map(train, task)
+    _refuse_bad_splits(report, task, labels, val, test)
     positive = cfg.positive_class or (labels[1] if task == "seq-cls" and len(labels) > 1 else None)
     try:
         params = {**metrics.get(cfg.objective.metric).params, **cfg.objective.params}
@@ -166,6 +187,7 @@ def check_data(exp_dir: Path, *, resplit: bool = False, val_frac: float = 0.1) -
         if splits.exists():
             if not resplit:
                 raise ValueError(frozen_msg)
+            _refuse_resplit_after_noise(exp_dir)
             shutil.rmtree(splits)
             (vault_dir(cfg.uid) / "test.jsonl").unlink(missing_ok=True)
             ex.save_state(exp_dir, ex.State())

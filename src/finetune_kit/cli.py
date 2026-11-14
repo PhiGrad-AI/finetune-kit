@@ -38,7 +38,7 @@ def _errors():
 
     try:
         yield
-    except (FileNotFoundError, ValueError, KeyError, TamperError) as e:
+    except (OSError, OverflowError, ValueError, KeyError, TamperError) as e:  # OSError: offline model load
         msg = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
         fail(str(msg))
 

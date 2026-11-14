@@ -300,3 +300,68 @@ def test_check_data_tokenizer_failure_leaves_nothing_frozen(runner, seq_jsonl, t
     assert not (d / "splits").exists() and not (vault_dir(cfg.uid) / "test.jsonl").exists()
     monkeypatch.setattr(commands, "load_tokenizer", lambda profile: _StubTok())
     assert runner.invoke(app, ["check-data", "001"]).exit_code == 0
+
+
+@pytest.mark.parametrize("exc", [OSError("offline: model not cached"), OverflowError("too big")])
+def test_check_data_os_and_overflow_errors_are_json(runner, seq_jsonl, tmp_path, monkeypatch, exc):
+    _new(runner, seq_jsonl)
+
+    def boom(profile):
+        raise exc
+
+    monkeypatch.setattr(commands, "load_tokenizer", boom)
+    r = runner.invoke(app, ["check-data", "001"])
+    assert r.exit_code == 2 and str(exc) in _out(r)["error"]
+
+
+def test_check_data_refuses_empty_val_and_freezes_nothing(runner, seq_jsonl, tmp_path):
+    rows = _seq_rows()
+    seq_jsonl(rows[:40], "tr.jsonl")
+    seq_jsonl([], "va.jsonl")
+    seq_jsonl(rows[40:], "te.jsonl")
+    r = runner.invoke(app, ["new", "g", "--task", "seq-cls", "--model", "tiny-bert", "--train", "tr.jsonl",
+                            "--val", "va.jsonl", "--test", "te.jsonl", "--metric", "macro_f1"])
+    assert r.exit_code == 0, r.stdout
+    r = runner.invoke(app, ["check-data", "001"])
+    assert r.exit_code == 2 and "val split is empty" in _out(r)["error"]
+    assert not (_exp_dir(tmp_path) / "splits").exists()
+
+
+@pytest.mark.parametrize("split", ["val", "test"])
+def test_check_data_refuses_unseen_seq_labels(runner, seq_jsonl, tmp_path, split):
+    rows = _seq_rows()
+    other = [{"id": f"x{i}", "text": f"other {i}", "label": "0"} for i in range(10)]
+    unseen = [{"id": "u0", "text": "new class", "label": "9"}]
+    seq_jsonl(rows, "tr.jsonl")
+    seq_jsonl(other + (unseen if split == "val" else []), "va.jsonl")
+    seq_jsonl(other[:5] + (unseen if split == "test" else []), "te.jsonl")
+    r = runner.invoke(app, ["new", "g", "--task", "seq-cls", "--model", "tiny-bert", "--train", "tr.jsonl",
+                            "--val", "va.jsonl", "--test", "te.jsonl", "--metric", "macro_f1"])
+    assert r.exit_code == 0, r.stdout
+    r = runner.invoke(app, ["check-data", "001"])
+    assert r.exit_code == 2 and "'9'" in _out(r)["error"]
+    assert not (_exp_dir(tmp_path) / "splits").exists()
+
+
+def test_check_data_refuses_unseen_token_tags(runner, tok_jsonl, tmp_path):
+    train = [{"id": f"t{i}", "tokens": ["a", "Ann"], "tags": ["O", "B-PER"]} for i in range(20)]
+    val = [{"id": "v0", "tokens": ["a", "Rome"], "tags": ["O", "B-LOC"]}]
+    test = [{"id": "e0", "tokens": ["a", "Ann"], "tags": ["O", "B-PER"]}]
+    tok_jsonl(train, "tr.jsonl")
+    tok_jsonl(val, "va.jsonl")
+    tok_jsonl(test, "te.jsonl")
+    r = runner.invoke(app, ["new", "n", "--task", "token-cls", "--model", "tiny-bert", "--train", "tr.jsonl",
+                            "--val", "va.jsonl", "--test", "te.jsonl", "--metric", "entity_f1"])
+    assert r.exit_code == 0, r.stdout
+    r = runner.invoke(app, ["check-data", "001"])
+    assert r.exit_code == 2 and "LOC" in _out(r)["error"]
+    assert not (_exp_dir(tmp_path) / "splits").exists()
+
+
+def test_check_data_resplit_refused_after_noise_run(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    store.new_run(d, "noise", {}, [0, 1, 2], "noise floor")
+    before = ex.load(d)[2]
+    r = runner.invoke(app, ["check-data", "001", "--resplit"])
+    assert r.exit_code == 2 and "splits are baselined; start a new experiment" in _out(r)["error"]
+    assert ex.load(d)[2] == before and (d / "splits" / "train.jsonl").is_file()
