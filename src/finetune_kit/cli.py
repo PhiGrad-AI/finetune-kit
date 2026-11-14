@@ -518,6 +518,37 @@ def promote(
         emit(pr.promote(_exp(exp), run_id, seeds))
 
 
+@app.command()
+def init(
+    project: Optional[str] = typer.Argument(None, help="New project directory (default: the current one)."),
+    ai: str = typer.Option(..., "--ai", help="claude | codex | cursor"),
+    here: bool = typer.Option(False, "--here", help="Install into the current directory."),
+    force: bool = typer.Option(False, "--force", help="Also replace an edited .finetune-kit/memory/research-rules.md."),
+) -> None:
+    """Install the finetune-kit stage commands, rules and templates for a coding agent."""
+    from finetune_kit import installer
+
+    with _errors():
+        if project and here:
+            raise ValueError("give a project directory or --here, not both")
+        root = Path(project) if project else Path.cwd()
+        root.mkdir(parents=True, exist_ok=True)
+        written = installer.install(root, ai, force)
+    agent = installer.AGENTS[ai]
+    typer.echo(f"finetune-kit installed for {agent.label} in {root.resolve()} ({len(written)} files written).")
+    if installer.rules_kept(root):
+        typer.echo(f"Kept your edited {installer.RULES} (use --force to replace it with the shipped rules).")
+    typer.echo(f"Next: open {agent.label} in this project and run {agent.invoke}setup")
+
+
+@app.command("_guard", hidden=True)
+def _guard() -> None:
+    """Claude Code PreToolUse hook: exit 2 for edits to files only finetune-kit may write."""
+    from finetune_kit import guard
+
+    raise typer.Exit(guard.main())
+
+
 @app.command("_worker", hidden=True)
 def _worker() -> None:
     """Detached queue worker (started by `run`; exits when the queue is empty)."""
