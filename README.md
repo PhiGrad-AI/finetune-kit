@@ -102,7 +102,8 @@ label values and a suggested mapping without printing any row text.
 
 **Hugging Face datasets.** Use `--source hf:<id>[:<config>]` instead of `--train`, optionally with
 `--revision <branch|tag|sha>`; `new` pins the exact revision, so later stages see the same data.
-Class-label integers become label names. Downloads are cached in `~/.finetune-kit/hf-cache/`.
+Class-label integers become label names. The dataset files at the pinned revision are downloaded
+into `~/.finetune-kit/hf-cache/` (not `~/.cache/huggingface/`), so a pinned dataset also loads offline.
 Private or gated datasets use your existing Hugging Face login (`hf auth login` or
 `huggingface-cli login`); finetune-kit never asks for or stores a token.
 
@@ -111,9 +112,9 @@ Private or gated datasets use your existing Hugging Face login (`hf auth login` 
 - One file (`--train` only): `check-data` splits it 80/10/10, stratified by label and grouped by
   `group_id` when present. Or give `--train --val --test` yourself.
 - Hugging Face: published `train`, `validation` and `test` splits are used as they are (`valid`,
-  `val` and `dev` count as validation). A missing or empty validation split is carved from train;
-  a missing, empty or unlabelled test split is carved from train; with only `train`, it is split
-  80/10/10. `data-report.json` records `split_origin`, `ignored_splits` and a warning
+  `val` and `dev` count as validation). A missing, empty or unlabelled validation or test split is
+  carved from train (a split where only some rows lack labels is refused); with only `train`, it
+  is split 80/10/10. `data-report.json` records `split_origin`, `ignored_splits` and a warning
   "<role> carved from train: <reason>" for each carved part.
 
 Rows over the model's max length are truncated and counted; `check-data` warns beforehand.
