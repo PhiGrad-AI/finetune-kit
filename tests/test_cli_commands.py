@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from finetune_kit import commands, store
+from finetune_kit import commands, sources, store
 from finetune_kit import experiment as ex
 from finetune_kit.cli import app
 from finetune_kit.data import val_size_warning
@@ -403,17 +403,6 @@ def test_new_bad_column_writes_nothing(runner, tmp_path):
 
 # ---- Hugging Face sources ----
 
-import datasets  # noqa: E402
-
-from finetune_kit import sources  # noqa: E402
-
-
-def _hf_fake(monkeypatch, splits, sha="abc123"):
-    feats = {"label": datasets.ClassLabel(names=["benign", "injection"])}
-    monkeypatch.setattr(sources, "_resolve_revision", lambda repo, rev, cfg=None: sha)
-    monkeypatch.setattr(sources, "_load_dataset", lambda repo, cfg, rev: {k: (v, feats) for k, v in splits.items()})
-
-
 def _hf_rows(n, tag):
     return [{"text": f"{tag} word{i} text", "label": i % 2} for i in range(n)]
 
@@ -425,20 +414,20 @@ def _hf_new(runner, *extra, name="hf"):
     ])
 
 
-def _hf_published(monkeypatch):
-    _hf_fake(monkeypatch, {"train": _hf_rows(40, "tr"), "validation": _hf_rows(8, "va"), "test": _hf_rows(6, "te")})
+def _hf_published(hf_fake):
+    hf_fake({"train": _hf_rows(40, "tr"), "validation": _hf_rows(8, "va"), "test": _hf_rows(6, "te")})
 
 
-def test_new_from_hf_pins_revision(runner, tmp_path, monkeypatch):
-    _hf_published(monkeypatch)
+def test_new_from_hf_pins_revision(runner, tmp_path, hf_fake):
+    _hf_published(hf_fake)
     r = _hf_new(runner, "--revision", "main")
     assert r.exit_code == 0, r.stdout
     cfg, _, _ = ex.load(_exp_dir(tmp_path))
     assert cfg.data.source == "hf:x/y" and cfg.data.revision == "abc123" and cfg.data.train is None
 
 
-def test_check_data_from_hf_freezes_published_splits(runner, tmp_path, monkeypatch):
-    _hf_published(monkeypatch)
+def test_check_data_from_hf_freezes_published_splits(runner, tmp_path, hf_fake):
+    _hf_published(hf_fake)
     assert _hf_new(runner).exit_code == 0
     r = runner.invoke(app, ["check-data", "001"])
     assert r.exit_code == 0, r.stdout
@@ -451,8 +440,8 @@ def test_check_data_from_hf_freezes_published_splits(runner, tmp_path, monkeypat
     assert not any("carved" in w for w in report["warnings"])
 
 
-def test_check_data_from_hf_carved_warnings_and_ignored(runner, tmp_path, monkeypatch):
-    _hf_fake(monkeypatch, {"train": _hf_rows(100, "tr"), "unsupervised": _hf_rows(3, "un")})
+def test_check_data_from_hf_carved_warnings_and_ignored(runner, tmp_path, hf_fake):
+    hf_fake({"train": _hf_rows(100, "tr"), "unsupervised": _hf_rows(3, "un")})
     assert _hf_new(runner).exit_code == 0
     report = _out(runner.invoke(app, ["check-data", "001"]))
     assert report["ignored_splits"] == ["unsupervised"]
@@ -489,8 +478,8 @@ def test_hf_load_failure_leaves_no_experiment(runner, tmp_path, monkeypatch):
     assert not (tmp_path / "experiments").exists() or not list((tmp_path / "experiments").iterdir())
 
 
-def test_train_and_source_both_refused(runner, seq_jsonl, tmp_path, monkeypatch):
-    _hf_published(monkeypatch)
+def test_train_and_source_both_refused(runner, seq_jsonl, tmp_path, hf_fake):
+    _hf_published(hf_fake)
     r = _new(runner, seq_jsonl, "--source", "hf:x/y")
     assert r.exit_code == 2 and _out(r) == {"error": "give --train or --source, not both"}
 
@@ -500,8 +489,8 @@ def test_neither_train_nor_source_refused(runner):
     assert r.exit_code == 2 and _out(r) == {"error": "give --train or --source"}
 
 
-def test_source_with_val_or_revision_without_source_refused(runner, seq_jsonl, monkeypatch):
-    _hf_published(monkeypatch)
+def test_source_with_val_or_revision_without_source_refused(runner, seq_jsonl, hf_fake):
+    _hf_published(hf_fake)
     r = _hf_new(runner, "--val", "v.jsonl", "--test", "t.jsonl")
     assert r.exit_code == 2 and _out(r) == {"error": "--val and --test only apply with --train"}
     r = _new(runner, seq_jsonl, "--revision", "main")
@@ -514,8 +503,8 @@ def test_bad_hf_spec_is_one_line_error(runner):
     assert r.exit_code == 2 and "Hugging Face source must be" in _out(r)["error"]
 
 
-def test_hf_positive_class_checked_against_named_labels(runner, monkeypatch):
-    _hf_published(monkeypatch)
+def test_hf_positive_class_checked_against_named_labels(runner, hf_fake):
+    _hf_published(hf_fake)
     r = _hf_new(runner, "--positive-class", "injection")
     assert r.exit_code == 0, r.stdout
     r = _hf_new(runner, "--positive-class", "1", name="other")
@@ -533,3 +522,20 @@ def test_existing_jsonl_experiment_yaml_still_loads(runner, seq_jsonl, tmp_path)
     assert set(raw["data"]) <= {"train", "val", "test", "columns"}
     cfg = ex.ExperimentConfig(**raw)
     assert cfg.data.train == "data.jsonl" and cfg.data.source is None
+
+
+def test_cli_inspect_data_json(runner, tmp_path):
+    (tmp_path / "t.csv").write_text("prompt,is_injection\n" + "hello,0\nbye,1\n" * 3, encoding="utf-8")
+    r = runner.invoke(app, ["inspect-data", "--train", "t.csv"])
+    assert r.exit_code == 0, r.stdout
+    out = _out(r)
+    assert out["suggested_columns"] == {"text": "prompt", "label": "is_injection"}
+    assert "hello" not in r.stdout
+
+
+def test_cli_inspect_data_hf_and_error(runner, hf_fake):
+    _hf_published(hf_fake)
+    out = _out(runner.invoke(app, ["inspect-data", "--source", "hf:x/y"]))
+    assert out["revision"] == "abc123" and out["splits"]["validation"]["role"] == "val"
+    r = runner.invoke(app, ["inspect-data"])
+    assert r.exit_code == 2 and _out(r) == {"error": "give --train or --source"}
