@@ -699,3 +699,27 @@ def test_edited_model_profile_refused_after_noise(exp_with_noise, runner, monkey
     })
     r = _run(runner, exp_with_noise, {"dropout": 0.2})
     assert r.exit_code == 2 and "model profile 'tiny-bert' (changed)" in _out(r)["error"]
+
+
+def test_wait_surfaces_execution_refusal(exp_with_noise, runner):  # final review 4
+    rid = _out(_run(runner, exp_with_noise, {"dropout": 0.2}))["run_id"]
+    _inject(exp_with_noise, rid, [0.9, 0.9, 0.9])
+    (exp_with_noise / "splits" / "val.jsonl").write_text("tampered\n")
+    queue.worker_loop()
+    out = _out(runner.invoke(app, ["wait", rid, "--exp", exp_with_noise.name, "--timeout", "1"]))
+    assert out["status"] == "crash" and "refused at execution" in out["error"] and "changed" in out["error"]
+
+
+def test_wait_surfaces_promote_error(exp_with_noise, runner):  # final review 4
+    rid = store.new_run(exp_with_noise, "promote", {}, [0], "promote r001", extra={"source_run": "r001"})
+    req = store.read_request(exp_with_noise, rid)
+    req.update(status="done", seed_status=[], promote={"source_run": "r001", "error": "RuntimeError: boom"})
+    store.write_request(exp_with_noise, rid, req)
+    out = _out(runner.invoke(app, ["wait", rid, "--exp", exp_with_noise.name, "--timeout", "1"]))
+    assert out["error"] == "RuntimeError: boom" and out["promote"]["error"] == "RuntimeError: boom"
+
+
+def test_wait_has_no_error_key_on_success(exp_with_noise, runner):  # final review 4
+    rid = _research(runner, exp_with_noise, [0.75, 0.74, 0.76])
+    out = _out(runner.invoke(app, ["wait", rid, "--exp", exp_with_noise.name, "--timeout", "1"]))
+    assert out["status"] == "done" and "error" not in out

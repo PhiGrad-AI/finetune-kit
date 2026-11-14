@@ -278,6 +278,10 @@ def _wait_payload(exp_dir: Path, req: dict) -> dict:
         out["verdict"] = req["verdict"]
     if "promote" in req:
         out["promote"] = req["promote"]
+    # precheck refusals, last-resort failures and promote errors: never hidden from the agent
+    error = req.get("error") or (req.get("promote") or {}).get("error")
+    if error:
+        out["error"] = error
     return out
 
 

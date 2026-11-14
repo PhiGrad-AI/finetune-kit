@@ -91,11 +91,14 @@ Repeat:
      does not count as a run);
    - "budget spent": go to *Finish*;
    - anything about checksums, tampering or changed files: stop, and tell the user that a
-     protected file (rules, search space or splits) was changed, so results can no longer be
+     protected file (rules, search space, splits, `experiment.yaml` or the model profile) was changed, so results can no longer be
      trusted until it is restored;
    - anything else: explain it to the user and stop.
 
-4. **Wait** with the wait loop until the status is `done`, `crash` or `timeout`.
+4. **Wait** with the wait loop until the status is `done`, `crash` or `timeout`. If the `wait`
+   reply has an `error` that mentions tampering, checksums, changed or protected files, or
+   "modified after enqueue", stop the loop and tell the user that a protected file or the run
+   request was changed, so results can no longer be trusted until it is restored.
 
 5. **Read the verdict** from the `wait` reply (`verdict`: `keep`, `keep-simpler` or `discard`;
    crashes and timeouts are discards). The verdict is final: never override it or argue with
