@@ -284,3 +284,19 @@ def test_misses_token_spans(runner, tok_exp):
     assert rows[0]["gold"] == [["PER", 0, 1, "bob"], ["ORG", 2, 3, "far"]] and rows[0]["pred"] == [["LOC", 2, 3, "far"]]
     assert rows[1]["gold"] == [["PER", 0, 2, "mary smith"]] and rows[1]["pred"] == [["PER", 0, 1, "mary"]]
     assert len(_out(runner.invoke(app, ["misses", "001", "r001", "--k", "1"]))["rows"]) == 1
+
+
+def test_check_data_tokenizer_failure_leaves_nothing_frozen(runner, seq_jsonl, tmp_path, monkeypatch):
+    _new(runner, seq_jsonl)
+    d = _exp_dir(tmp_path)
+    cfg, _, _ = ex.load(d)
+
+    def boom(profile):
+        raise ValueError("offline")
+
+    monkeypatch.setattr(commands, "load_tokenizer", boom)
+    r = runner.invoke(app, ["check-data", "001"])
+    assert r.exit_code == 2 and "offline" in _out(r)["error"]
+    assert not (d / "splits").exists() and not (vault_dir(cfg.uid) / "test.jsonl").exists()
+    monkeypatch.setattr(commands, "load_tokenizer", lambda profile: _StubTok())
+    assert runner.invoke(app, ["check-data", "001"]).exit_code == 0
