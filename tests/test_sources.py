@@ -343,3 +343,30 @@ def test_inspect_choice_errors(tmp_path):
         sources.inspect("hf:x/y", "a.csv", None, None, tmp_path)
     with pytest.raises(ValueError, match="give --train or --source"):
         sources.inspect(None, None, None, None, tmp_path)
+
+
+def test_inspect_never_prints_second_text_column(tmp_path):
+    long_rep = "SENTINEL-REPEATED-" + "x" * 40  # > 40 chars, low cardinality
+    rows = [
+        {"text": f"a fairly long sentence number {i} with words", "label": "spam" if i % 2 else "ham",
+         "title": f"SENTINEL-UNIQUE-{i}", "ctx": long_rep, "short": f"S-{i % 3}"}
+        for i in range(12)
+    ]
+    (tmp_path / "t.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    r = sources.inspect(None, "t.jsonl", None, None, tmp_path)
+    out = json.dumps(r)
+    assert "SENTINEL" not in out
+    assert "title" not in r["label_candidates"] and "ctx" not in r["label_candidates"]
+    assert r["label_candidates"]["label"]["values"] == {"ham": 6, "spam": 6}
+    assert r["suggested_columns"]["label"] == "label"
+
+
+def test_inspect_id_column_is_not_text(hf_fake):
+    feats = {"id": datasets.Value("string"), "tokens": datasets.Sequence(datasets.Value("string")),
+             "tags": datasets.Sequence(datasets.ClassLabel(names=["O", "B"]))}
+    rows = [{"id": f"doc-{i}-long-identifier", "tokens": ["a"], "tags": [0]} for i in range(5)]
+    hf_fake({"train": rows}, features=feats)
+    r = sources.inspect("hf:x/y", None, None, None, Path("."))
+    assert "text" not in r["suggested_columns"]
+    assert r["tasks_possible"] == ["token-cls"]
+    assert "id" not in r["label_candidates"] or r["label_candidates"]["id"]["n_distinct"] <= 2
