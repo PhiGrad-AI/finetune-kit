@@ -260,3 +260,62 @@ def test_worker_fake_train(tmp_exp, monkeypatch):
     assert m["objective"] == 0.7 and m["guardrail"] == 0.2 and m["train_s"] == 9.0
     assert m["report"] == {}
     assert not (rd / "seed_4" / "val_preds.npy").exists()
+
+
+@pytest.mark.filterwarnings("ignore::UserWarning", "ignore::sklearn.exceptions.UndefinedMetricWarning")
+def test_worker_records_metric_value_errors(tmp_exp):
+    import yaml
+
+    p = tmp_exp / "experiment.yaml"
+    d = yaml.safe_load(p.read_text())
+    d["guardrail"] = None  # a failing guardrail is fatal; this test is about report metrics
+    p.write_text(yaml.safe_dump(d))
+    # single-class val: roc_auc raises ValueError in sklearn -> recorded, not dropped
+    rows = [r for r in _seq(40, 2, 1) if r["label"] == "0"][:8]
+    freeze_splits(tmp_exp, "uid-x", _seq(40, 2, 0), rows, _seq(8, 2, 2))
+    rd = _request(tmp_exp)
+    assert worker.main(["--exp", str(tmp_exp), "--run", "r1", "--seed", "0"]) == 0
+    m = json.loads((rd / "seed_0" / "metrics.json").read_text())
+    assert m["report"]["roc_auc"] is None and "roc_auc" in m["report_errors"]
+    assert "accuracy" in m["report"] and m["report"]["accuracy"] is not None
+
+
+def test_worker_unexpected_metric_error_fails_without_metrics(tmp_exp, monkeypatch):
+    import dataclasses
+
+    bad = dataclasses.replace(
+        metrics.get("log_loss"), fn=lambda *a: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    real = metrics.list_for
+    monkeypatch.setattr(metrics, "list_for", lambda t: [*real(t), bad])
+    rd = _request(tmp_exp)
+    assert worker.main(["--exp", str(tmp_exp), "--run", "r1", "--seed", "0"]) == 1
+    assert "boom" in (rd / "seed_0" / "error.txt").read_text()
+    assert not (rd / "seed_0" / "metrics.json").exists()
+
+
+def test_worker_metrics_written_atomically_after_preds(tmp_exp, monkeypatch):
+    seen = {}
+    real = worker.os.replace
+
+    def spy(src, dst):
+        seen["preds_before"] = (dst.parent / "val_preds.npy").is_file()
+        seen["src"] = str(src)
+        real(src, dst)
+
+    monkeypatch.setattr(worker.os, "replace", spy)
+    rd = _request(tmp_exp)
+    assert worker.main(["--exp", str(tmp_exp), "--run", "r1", "--seed", "0"]) == 0
+    assert seen["preds_before"] and seen["src"].endswith("metrics.json.tmp")
+    assert not list((rd / "seed_0").glob("*.tmp"))
+
+
+def test_worker_rerun_clears_stale_files(tmp_exp):
+    rd = _request(tmp_exp, overrides={"not_a_key": 1})
+    sd = rd / "seed_0"
+    assert worker.main(["--exp", str(tmp_exp), "--run", "r1", "--seed", "0"]) == 1
+    req = json.loads((rd / "request.json").read_text())
+    req["overrides"] = {"max_steps": 2}
+    (rd / "request.json").write_text(json.dumps(req))
+    assert worker.main(["--exp", str(tmp_exp), "--run", "r1", "--seed", "0"]) == 0
+    assert (sd / "metrics.json").is_file() and not (sd / "error.txt").exists()
