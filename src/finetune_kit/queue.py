@@ -10,6 +10,7 @@ import json
 import math
 import os
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -20,7 +21,8 @@ from pathlib import Path
 
 from finetune_kit import experiment as ex
 from finetune_kit import stats, store
-from finetune_kit.paths import kit_home
+from finetune_kit.catalog import validate_config
+from finetune_kit.paths import kit_home, test_env
 
 LONG_TIMEOUT_S = 4 * 3600
 LONG_STAGES = ("bakeoff", "lr-scan", "noise")
@@ -106,19 +108,49 @@ def _spawn_daemon() -> int:
     return proc.pid
 
 
+def _ensure_daemon_locked() -> int | None:
+    """Caller holds the queue lock. Spawn a daemon if work is queued and no live worker exists."""
+    if test_env("FINETUNE_KIT_NO_DAEMON") == "1" or not _read():
+        return None
+    pid = worker_pid()
+    if pid is None:
+        pid = _spawn_daemon()
+        worker_lock_path().write_text(str(pid))
+    return pid
+
+
+def ensure_daemon() -> int | None:
+    """Restart the worker if the queue has entries but its daemon died; returns the worker PID."""
+    with _qlock():
+        return _ensure_daemon_locked()
+
+
 def enqueue(exp_dir: Path, run_id: str) -> int:
     """Append a run to the queue, start the daemon if none is alive; returns 1-based position."""
     entry = {"exp_dir": str(Path(exp_dir).resolve()), "run_id": run_id}
     with _qlock():
         entries = _read() + [entry]
         _write(entries)
-        if os.environ.get("FINETUNE_KIT_NO_DAEMON") != "1" and worker_pid() is None:
-            worker_lock_path().write_text(str(_spawn_daemon()))
+        _ensure_daemon_locked()
         return len(entries)
 
 
+def _kill_group(pid: int | None) -> None:
+    """SIGKILL a per-seed training process group (each seed runs in its own session)."""
+    if not pid:
+        return
+    try:
+        os.killpg(int(pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def recover_stale() -> list[dict]:
-    """Queued runs left `running` by a dead worker become `crash`; each is retried once."""
+    """Queued runs left `running`/`finalizing` by a dead worker.
+
+    `running`: the orphaned training group is killed, the run becomes `crash` and is retried once.
+    `finalizing`: all seeds finished; bookkeeping is completed (idempotently), no retraining.
+    """
     out = []
     with _qlock():
         entries = _read()
@@ -128,17 +160,27 @@ def recover_stale() -> list[dict]:
             req = store.read_request(exp_dir, run_id)
         except FileNotFoundError:
             continue
-        if req.get("status") != "running" or pid_alive(req.get("pid")):
+        status = req.get("status")
+        if status not in ("running", "finalizing") or pid_alive(req.get("pid")):
             continue
+        if status == "finalizing":
+            req["status"] = req.pop("outcome", "crash")
+            _finalize(exp_dir, req, req.get("seed_status") or [])
+            _remove(e)
+            out.append({"exp_dir": str(exp_dir), "run_id": run_id, "status": req["status"], "retried": False})
+            continue
+        if pid_alive(req.get("child_pid")):
+            _kill_group(req["child_pid"])
         attempt = {"status": "crash", "reason": f"worker (pid {req.get('pid')}) died mid-run", "at": store.now()}
         req.setdefault("attempts", []).append(attempt)
         retried = req.get("retries", 0) == 0
+        req.update(pid=None, child_pid=None)
         if retried:
-            req.update(status="queued", retries=req.get("retries", 0) + 1, pid=None)
+            req.update(status="queued", retries=req.get("retries", 0) + 1)
             store.write_request(exp_dir, run_id, req)
         else:
-            req.update(status="crash", pid=None)
-            _finalize(exp_dir, req, [])
+            req.update(status="crash", error=attempt["reason"])
+            _finalize(exp_dir, req, req.get("seed_status") or [])
             _remove(e)
         out.append({"exp_dir": str(exp_dir), "run_id": run_id, "status": "crash", "retried": retried})
     return out
@@ -188,17 +230,26 @@ def worker_loop(once: bool = False) -> None:
 
 
 def _mark_failed(exp_dir: Path, run_id: str, error: str) -> None:
+    """Last resort after an unexpected worker error: still count the run, else at least mark it."""
     try:
         req = store.read_request(exp_dir, run_id)
-        if req.get("status") not in store.TERMINAL:
-            req.update(status="crash", verdict="discard" if req["stage"] == "research" else "crash", error=error)
-            store.write_request(exp_dir, run_id, req)
     except Exception:
-        pass
+        return
+    if req.get("status") in store.TERMINAL:
+        return
+    req.update(status="crash", error=error)
+    try:
+        _finalize(exp_dir, req, req.get("seed_status") or [])
+    except Exception:
+        try:
+            req["verdict"] = "discard" if req["stage"] == "research" else "crash"
+            store.write_request(exp_dir, run_id, req)
+        except Exception:
+            pass
 
 
 def timeout_for(exp_dir: Path, stage: str, state: ex.State) -> float:
-    env = os.environ.get("FINETUNE_KIT_TIMEOUT_S")
+    env = test_env("FINETUNE_KIT_TIMEOUT_S")
     if env:
         return float(env)
     if stage in LONG_STAGES or state.baseline_train_s is None:
@@ -226,6 +277,45 @@ def _count_lines(p: Path) -> int:
         return sum(1 for line in f if line.strip())
 
 
+def _precheck(exp_dir: Path, req: dict) -> str | None:
+    """Re-check at execution time what `finetune-kit run` checked at enqueue time."""
+    try:
+        ex.verify_checksums(exp_dir, store.project_root(exp_dir))
+    except ex.TamperError as e:
+        return f"refused at execution: {e}"
+    if req["stage"] != "research":
+        return None
+    cfg, space, state = ex.load(exp_dir)
+    if space is None:
+        return "refused at execution: no search space committed"
+    profile = store.profile_for(cfg, {}, store.project_root(exp_dir))
+    config = req.get("config", req.get("overrides") or {})
+    errs = validate_config(
+        config, space.tunable, space.losses, store.effective_defaults(cfg, state, profile), cfg.task, profile,
+    )
+    return "refused at execution: " + "; ".join(errs) if errs else None
+
+
+def _run_seed(exp_dir: Path, req: dict, seed: int, timeout: float) -> str:
+    sdir = store.run_dir(exp_dir, req["run_id"]) / f"seed_{seed}"
+    sdir.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-m", "finetune_kit.train.worker",
+           "--exp", str(exp_dir), "--run", req["run_id"], "--seed", str(seed)]
+    with open(sdir / "train.log", "w") as log:
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        req["child_pid"] = proc.pid
+        store.write_request(exp_dir, req["run_id"], req)
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc.pid)
+            proc.wait()
+            return "timeout"
+        finally:
+            req["child_pid"] = None
+    return "done" if rc == 0 and _objective(sdir) is not None else "crash"
+
+
 def _process(exp_dir: Path, run_id: str) -> None:
     try:
         req = store.read_request(exp_dir, run_id)
@@ -233,94 +323,115 @@ def _process(exp_dir: Path, run_id: str) -> None:
         return
     if req.get("status") != "queued":
         return
-    _, _, state = ex.load(exp_dir)
     rdir = store.run_dir(exp_dir, run_id)
     for old in rdir.glob("seed_*"):
         shutil.rmtree(old)
-    req.update(status="running", pid=os.getpid(), started=store.now())
+    req.update(status="running", pid=os.getpid(), started=store.now(), child_pid=None)
     store.write_request(exp_dir, run_id, req)
 
-    timeout = timeout_for(exp_dir, req["stage"], state)
-    seeds_out = []
-    for seed in req["seeds"]:
-        sdir = rdir / f"seed_{seed}"
-        sdir.mkdir(parents=True, exist_ok=True)
-        cmd = [sys.executable, "-m", "finetune_kit.train.worker",
-               "--exp", str(exp_dir), "--run", run_id, "--seed", str(seed)]
-        t0 = time.monotonic()
-        with open(sdir / "train.log", "w") as log:
-            try:
-                rc = subprocess.run(cmd, timeout=timeout, stdout=log, stderr=subprocess.STDOUT).returncode
-                status = "done" if rc == 0 and _objective(sdir) is not None else "crash"
-            except subprocess.TimeoutExpired:
-                status = "timeout"
-        seeds_out.append({"seed": seed, "status": status, "wall_s": round(time.monotonic() - t0, 3)})
-        if status != "done":
-            break  # rule 4: a crash or timeout discards the run; don't burn time on more seeds
+    seeds_out: list[dict] = []
+    problem = _precheck(exp_dir, req)
+    if problem:
+        req["error"] = problem
+    else:
+        timeout = timeout_for(exp_dir, req["stage"], ex.load(exp_dir)[2])
+        for seed in req["seeds"]:
+            t0 = time.monotonic()
+            status = _run_seed(exp_dir, req, seed, timeout)
+            seeds_out.append({"seed": seed, "status": status, "wall_s": round(time.monotonic() - t0, 3)})
+            if status != "done":
+                break  # rule 4: a crash or timeout discards the run; don't burn time on more seeds
     req["seed_status"] = seeds_out
-    req["status"] = next((s["status"] for s in seeds_out if s["status"] != "done"), "done")
+    req["status"] = "crash" if problem else next(
+        (s["status"] for s in seeds_out if s["status"] != "done"), "done"
+    )
     req["finished"] = store.now()
     _finalize(exp_dir, req, seeds_out)
 
 
-def _finalize(exp_dir: Path, req: dict, seeds_out: list[dict]) -> None:
-    """Update state for the finished run, append its results row, then write the final request."""
-    run_id, stage, ok = req["run_id"], req["stage"], req["status"] == "done"
-    cfg, _, state = ex.load(exp_dir)
-    direction, metric_delta = store.metric_info(cfg, cfg.objective)
-    min_delta = cfg.min_delta if cfg.min_delta is not None else metric_delta
-    wall = sum(s["wall_s"] for s in seeds_out)
-    try:
-        summary = store.summarize(exp_dir, run_id)
-    except ValueError:
-        summary = None
-
+def _verdict(exp_dir: Path, cfg, state: ex.State, req: dict, summary, direction: str, min_delta: float) -> str:
+    stage, ok = req["stage"], req["status"] == "done"
     if stage == "noise":
-        verdict = "baseline" if ok else req["status"]
-        if ok:
-            ms = store.seed_metrics(exp_dir, run_id)
-            guards = [m["guardrail"] for m in ms if m.get("guardrail") is not None]
-            state.sigma_obj = stats.sigma([m["objective"] for m in ms])
-            state.sigma_guard = stats.sigma(guards) if guards else None
-            state.noise_run = state.best_run = run_id
-            state.baseline_train_s = wall / len(seeds_out)
-    elif stage == "research":
-        verdict = "discard"
-        if ok and summary is not None and state.best_run:
-            best = store.summarize(exp_dir, state.best_run)
-            guard_dir = store.metric_info(cfg, cfg.guardrail)[0] if cfg.guardrail else "max"
-            verdict = stats.verdict(
-                summary, best, state.sigma_obj or 0.0, state.sigma_guard, direction, min_delta, guard_dir,
-            )
-        if verdict in ("keep", "keep-simpler"):
-            state.best_run = run_id
-            state.non_keep_streak = 0
+        if not ok:
+            return req["status"]
+        ms = store.seed_metrics(exp_dir, req["run_id"])
+        guards = [m["guardrail"] for m in ms if m.get("guardrail") is not None]
+        state.sigma_obj = stats.sigma([m["objective"] for m in ms])
+        state.sigma_guard = stats.sigma(guards) if guards else None
+        state.noise_run = state.best_run = req["run_id"]
+        walls = [s["wall_s"] for s in req.get("seed_status") or []]
+        state.baseline_train_s = statistics.fmean(walls)
+        return "baseline"
+    if stage == "research":
+        if not (ok and summary is not None and state.best_run):
+            return "discard"
+        best = store.summarize(exp_dir, state.best_run)
+        guard_dir = store.metric_info(cfg, cfg.guardrail)[0] if cfg.guardrail else "max"
+        return stats.verdict(
+            summary, best, state.sigma_obj or 0.0, state.sigma_guard, direction, min_delta, guard_dir,
+        )
+    return stage if ok else req["status"]
+
+
+def _finalize(exp_dir: Path, req: dict, seeds_out: list[dict]) -> None:
+    """Idempotent bookkeeping for a finished run.
+
+    The request is first marked `finalizing` (with the intended outcome) so a worker killed
+    mid-way is resumed by `recover_stale()` without retraining. State changes are applied once
+    (`state.finalized[run_id]` is saved atomically with them), and the results row is appended
+    only if absent.
+    """
+    run_id, stage = req["run_id"], req["stage"]
+    req["seed_status"] = seeds_out
+    store.write_request(exp_dir, run_id, {**req, "status": "finalizing", "outcome": req["status"]})
+    wall = sum(s["wall_s"] for s in seeds_out)
+    with ex.state_lock(exp_dir):
+        cfg, _, state = ex.load(exp_dir)
+        direction, metric_delta = store.metric_info(cfg, cfg.objective)
+        min_delta = cfg.min_delta if cfg.min_delta is not None else metric_delta
+        try:
+            summary = store.summarize(exp_dir, run_id)
+        except ValueError:
+            summary = None
+        if run_id in state.finalized:
+            verdict = state.finalized[run_id]
         else:
-            state.non_keep_streak += 1
-        state.runs_used += 1
-        state.hours_used += wall / 3600
-    else:
-        verdict = stage if ok else req["status"]
+            try:
+                verdict = _verdict(exp_dir, cfg, state, req, summary, direction, min_delta)
+            except Exception as e:  # a failed verdict still counts the run
+                verdict = "discard" if stage == "research" else "crash"
+                req["error"] = f"verdict failed: {type(e).__name__}: {e}"
+            if stage == "research":
+                if verdict in ("keep", "keep-simpler"):
+                    state.best_run = run_id
+                    state.non_keep_streak = 0
+                else:
+                    state.non_keep_streak += 1
+                state.runs_used += 1
+                state.hours_used += wall / 3600
+            state.finalized[run_id] = verdict
+            ex.save_state(exp_dir, state)
+
+        if stage == "lr-scan":
+            _finish_lr_scan(exp_dir, req, direction)
+        elif stage == "bakeoff":
+            _finish_bakeoff(exp_dir, req, direction, min_delta)
+
+        if run_id not in store.result_run_ids(exp_dir):
+            desc = req.get("description", "")
+            if stage == "research" and req["status"] != "done":
+                desc = f"{desc} [{req['status']}]".strip()
+            store.append_result(exp_dir, {
+                "run_id": run_id, "round": req.get("round"), "stage": stage,
+                "objective_mean": summary.objective_mean if summary else None,
+                "objective_std": summary.objective_std if summary else None,
+                "guardrail_mean": summary.guardrail_mean if summary else None,
+                "n_seeds": summary.n_seeds if summary else 0,
+                "minutes": round(wall / 60, 2), "verdict": verdict, "description": desc,
+                "config": json.dumps(req.get("overrides") or {}, sort_keys=True),
+            })
     req["verdict"] = verdict
-    ex.save_state(exp_dir, state)
-
-    if stage == "lr-scan":
-        _finish_lr_scan(exp_dir, req, direction)
-    elif stage == "bakeoff":
-        _finish_bakeoff(exp_dir, req, direction, min_delta)
-
-    desc = req.get("description", "")
-    if stage == "research" and not ok:
-        desc = f"{desc} [{req['status']}]".strip()
-    store.append_result(exp_dir, {
-        "run_id": run_id, "round": req.get("round"), "stage": stage,
-        "objective_mean": summary.objective_mean if summary else None,
-        "objective_std": summary.objective_std if summary else None,
-        "guardrail_mean": summary.guardrail_mean if summary else None,
-        "n_seeds": summary.n_seeds if summary else 0,
-        "minutes": round(wall / 60, 2), "verdict": verdict, "description": desc,
-        "config": json.dumps(req.get("overrides") or {}, sort_keys=True),
-    })
+    req.pop("outcome", None)
     store.write_request(exp_dir, run_id, req)
 
 

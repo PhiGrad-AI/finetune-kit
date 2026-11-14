@@ -11,6 +11,7 @@ def runner():
 def _kit_home(tmp_path, monkeypatch):
     home = tmp_path / "kit-home"
     monkeypatch.setenv("FINETUNE_KIT_HOME", str(home))
+    monkeypatch.setenv("FINETUNE_KIT_TESTING", "1")  # enables FAKE_TRAIN, TIMEOUT_S, MAX_STEPS, NO_DAEMON
     return home
 
 

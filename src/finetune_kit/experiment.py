@@ -1,6 +1,10 @@
+import fcntl
 import hashlib
+import os
 import re
+import tempfile
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -76,6 +80,7 @@ class State(BaseModel):
     promoted: bool = False
     bakeoff: dict | None = None
     model_locked: bool = False
+    finalized: dict[str, str] = Field(default_factory=dict)  # run_id -> verdict, written by the worker
 
 
 def _slug(name: str) -> str:
@@ -110,7 +115,39 @@ def load(exp_dir: Path) -> tuple[ExperimentConfig, SearchSpace | None, State]:
 
 
 def save_state(exp_dir: Path, state: State) -> None:
-    (Path(exp_dir) / "state.json").write_text(state.model_dump_json(indent=2))
+    """Atomic write (temp file + os.replace): readers never see a torn state.json."""
+    path = Path(exp_dir) / "state.json"
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".state.")
+    with os.fdopen(fd, "w") as f:
+        f.write(state.model_dump_json(indent=2))
+    os.replace(tmp, path)
+
+
+_held: dict[str, int] = {}
+
+
+@contextmanager
+def state_lock(exp_dir: Path):
+    """Per-experiment exclusive lock (`<exp>/.state.lock`) around load-modify-save of state.
+
+    Re-entrant within a process, so library helpers can lock while their callers already do.
+    """
+    key = str(Path(exp_dir).resolve())
+    if _held.get(key):
+        _held[key] += 1
+        try:
+            yield
+        finally:
+            _held[key] -= 1
+        return
+    with open(Path(key) / ".state.lock", "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        _held[key] = 1
+        try:
+            yield
+        finally:
+            _held.pop(key, None)
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _sha(path: Path) -> str:
@@ -119,6 +156,11 @@ def _sha(path: Path) -> str:
 
 def commit_space(exp_dir: Path, space: SearchSpace) -> State:
     exp_dir = Path(exp_dir)
+    with state_lock(exp_dir):
+        return _commit_space(exp_dir, space)
+
+
+def _commit_space(exp_dir: Path, space: SearchSpace) -> State:
     cfg, _, state = load(exp_dir)
     valid = set(catalog.names(cfg.task))
     for n in space.tunable:
@@ -153,11 +195,12 @@ def _key(p: Path, exp_dir: Path, project_root: Path) -> str:
 
 def record_checksums(exp_dir: Path, project_root: Path) -> State:
     exp_dir, project_root = Path(exp_dir), Path(project_root)
-    _, _, state = load(exp_dir)
-    for p in protected_files(exp_dir, project_root):
-        if p.is_file():
-            state.checksums[_key(p, exp_dir, project_root)] = _sha(p)
-    save_state(exp_dir, state)
+    with state_lock(exp_dir):
+        _, _, state = load(exp_dir)
+        for p in protected_files(exp_dir, project_root):
+            if p.is_file():
+                state.checksums[_key(p, exp_dir, project_root)] = _sha(p)
+        save_state(exp_dir, state)
     return state
 
 

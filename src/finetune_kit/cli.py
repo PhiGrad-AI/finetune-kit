@@ -56,13 +56,19 @@ def _verify(exp_dir: Path) -> None:
     ex.verify_checksums(exp_dir, project_root(exp_dir))
 
 
-def _pending(exp_dir: Path, stage: str) -> int:
+def _requests(exp_dir: Path, stage: str, *, pending_only: bool = False, skip_failed: bool = False) -> list[dict]:
     from finetune_kit import store
 
-    return sum(
-        1 for r in store.list_requests(exp_dir)
-        if r["stage"] == stage and r["status"] not in store.TERMINAL
-    )
+    out = []
+    for r in store.list_requests(exp_dir):
+        if r["stage"] != stage:
+            continue
+        if pending_only and r["status"] in store.TERMINAL:
+            continue
+        if skip_failed and r["status"] in ("crash", "timeout"):
+            continue
+        out.append(r)
+    return out
 
 
 @app.command()
@@ -82,84 +88,108 @@ def run(
         if stage not in ("research", "noise"):
             raise ValueError(f"--stage must be research or noise, not {stage!r}")
         exp_dir = _exp(exp)
-        _verify(exp_dir)
-        cfg, space, state = ex.load(exp_dir)
-        root = store.project_root(exp_dir)
         try:
-            overrides = json.loads(config)
+            agent_config = json.loads(config)
         except json.JSONDecodeError as e:
             raise ValueError(f"--config is not valid JSON: {e}") from None
-        if not isinstance(overrides, dict):
+        if not isinstance(agent_config, dict):
             raise ValueError("--config must be a JSON object")
-        profile = store.profile_for(cfg, {}, root)
-        warnings = store.version_warnings(cfg, profile)
-        defaults = store.effective_defaults(cfg, state, profile)
-        n = cfg.seeds if seeds is None else seeds
+        # Checks, budget and new_run under one lock: parallel `run` calls cannot overshoot.
+        with ex.state_lock(exp_dir):
+            _verify(exp_dir)
+            cfg, space, state = ex.load(exp_dir)
+            root = store.project_root(exp_dir)
+            profile = store.profile_for(cfg, {}, root)
+            warnings = store.version_warnings(cfg, profile)
+            defaults = store.effective_defaults(cfg, state, profile)
+            n = cfg.seeds if seeds is None else seeds
+            extra: dict = {}
 
-        if stage == "noise":
-            if n < 2:
-                raise ValueError("the noise floor needs at least 2 seeds")
-            if overrides:
-                warnings.append(
-                    "noise stage uses the default config; ignored keys: " + ", ".join(sorted(overrides))
-                )
-            overrides = {} if state.lr_scan_best is None else {"lr": state.lr_scan_best}
-            first = not any(r["stage"] == "noise" for r in store.list_requests(exp_dir))
-            if first:
-                ex.record_checksums(exp_dir, root)
-            state = ex.load(exp_dir)[2]
-            state.model_locked = True
-            ex.save_state(exp_dir, state)
-            desc = desc or "noise floor (default config)"
-        else:
-            if state.sigma_obj is None:
-                raise ValueError("no noise floor yet: run `finetune-kit run EXP --stage noise` and wait for it first")
-            if space is None:
-                raise ValueError("no search space committed: run `finetune-kit space commit` first")
-            if n < cfg.seeds:
-                raise ValueError(f"research runs use at least {cfg.seeds} seeds (experiment.yaml)")
-            pending = _pending(exp_dir, "research")
-            if state.runs_used + pending >= cfg.budget.max_runs:
-                raise ValueError(
-                    f"budget spent: {state.runs_used} runs used + {pending} queued of max_runs {cfg.budget.max_runs}"
-                )
-            if state.hours_used >= cfg.budget.max_hours:
-                raise ValueError(
-                    f"budget spent: {state.hours_used:.2f} h used of max_hours {cfg.budget.max_hours}"
-                )
-            errs = validate_config(overrides, space.tunable, space.losses, defaults, cfg.task, profile)
-            if errs:
-                raise ValueError("; ".join(errs))
-            overrides = {
-                **({"lr": state.lr_scan_best} if state.lr_scan_best is not None else {}),
-                **overrides,
-            }
-        run_id = store.new_run(exp_dir, stage, overrides, list(range(n)), desc)
+            if stage == "noise":
+                if n < 2:
+                    raise ValueError("the noise floor needs at least 2 seeds")
+                prior = _requests(exp_dir, "noise", skip_failed=True)
+                if prior:
+                    raise ValueError(
+                        f"the noise floor is measured once per experiment ({prior[0]['run_id']} is "
+                        f"{prior[0]['status']}); it cannot be re-measured — start a new experiment to re-baseline"
+                    )
+                if _requests(exp_dir, "lr-scan", pending_only=True):
+                    raise ValueError("an LR scan is still pending; wait for it before measuring the noise floor")
+                if agent_config:
+                    warnings.append(
+                        "noise stage uses the default config; ignored keys: " + ", ".join(sorted(agent_config))
+                    )
+                overrides = {} if state.lr_scan_best is None else {"lr": state.lr_scan_best}
+                if not _requests(exp_dir, "noise"):
+                    ex.record_checksums(exp_dir, root)
+                state = ex.load(exp_dir)[2]
+                state.model_locked = True
+                ex.save_state(exp_dir, state)
+                desc = desc or "noise floor (default config)"
+            else:
+                if state.sigma_obj is None:
+                    raise ValueError(
+                        "no noise floor yet: run `finetune-kit run EXP --stage noise` and wait for it first"
+                    )
+                if space is None:
+                    raise ValueError("no search space committed: run `finetune-kit space commit` first")
+                if n < cfg.seeds:
+                    raise ValueError(f"research runs use at least {cfg.seeds} seeds (experiment.yaml)")
+                pending = len(_requests(exp_dir, "research", pending_only=True))
+                if state.runs_used + pending >= cfg.budget.max_runs:
+                    raise ValueError(
+                        f"budget spent: {state.runs_used} runs used + {pending} queued of max_runs "
+                        f"{cfg.budget.max_runs}"
+                    )
+                if state.hours_used >= cfg.budget.max_hours:
+                    raise ValueError(
+                        f"budget spent: {state.hours_used:.2f} h used of max_hours {cfg.budget.max_hours}"
+                    )
+                errs = validate_config(agent_config, space.tunable, space.losses, defaults, cfg.task, profile)
+                if errs:
+                    raise ValueError("; ".join(errs))
+                overrides = {
+                    **({"lr": state.lr_scan_best} if state.lr_scan_best is not None else {}),
+                    **agent_config,
+                }
+                extra = {"config": agent_config}  # re-validated by the worker at execution time
+            run_id = store.new_run(exp_dir, stage, overrides, list(range(n)), desc, extra=extra)
         position = queue.enqueue(exp_dir, run_id)
     emit({"run_id": run_id, "status": "queued", "position": position, "warnings": warnings})
 
 
 @app.command("lr-scan")
 def lr_scan(exp: str = typer.Argument(..., help="Experiment: number, name or path.")) -> None:
-    """Queue 5 short runs (20% of the schedule, seed 0) at LRs log-spaced over the profile range."""
+    """Queue 5 short runs (20% of the schedule, seed 0) at LRs log-spaced over the profile range.
+
+    Only before the noise floor: afterwards the default LR is fixed for the experiment.
+    """
     from finetune_kit import experiment as ex
     from finetune_kit import queue, store
 
     with _errors():
         exp_dir = _exp(exp)
-        _verify(exp_dir)
-        cfg, _, _ = ex.load(exp_dir)
-        profile = store.profile_for(cfg, {}, store.project_root(exp_dir))
-        lo, hi = profile.lr_range
-        lrs = [float(f"{lo * (hi / lo) ** (i / 4):.3g}") for i in range(5)]
-        scan_id = store.now()
-        ids = [
-            store.new_run(
-                exp_dir, "lr-scan", {"lr": lr, "step_fraction": 0.2}, [0], f"lr scan {lr:g}",
-                extra={"scan_id": scan_id},
-            )
-            for lr in lrs
-        ]
+        with ex.state_lock(exp_dir):
+            _verify(exp_dir)
+            cfg, _, _ = ex.load(exp_dir)
+            noise = _requests(exp_dir, "noise", skip_failed=True)
+            if noise:
+                raise ValueError(
+                    f"the noise floor ({noise[0]['run_id']}) already fixed the default LR; an LR scan is "
+                    "only possible before it — start a new experiment to rescan"
+                )
+            profile = store.profile_for(cfg, {}, store.project_root(exp_dir))
+            lo, hi = profile.lr_range
+            lrs = [float(f"{lo * (hi / lo) ** (i / 4):.3g}") for i in range(5)]
+            scan_id = store.now()
+            ids = [
+                store.new_run(
+                    exp_dir, "lr-scan", {"lr": lr, "step_fraction": 0.2}, [0], f"lr scan {lr:g}",
+                    extra={"scan_id": scan_id},
+                )
+                for lr in lrs
+            ]
         for rid in ids:
             queue.enqueue(exp_dir, rid)
     emit({"run_ids": ids, "lrs": lrs, "status": "queued"})
@@ -181,17 +211,18 @@ def bakeoff(
             if len(args) != 3:
                 raise ValueError("usage: finetune-kit bakeoff choose EXP MODEL")
             exp_dir = _exp(args[1])
-            cfg, _, state = ex.load(exp_dir)
-            if state.model_locked:
-                raise ValueError(f"model is locked ({cfg.model}); the noise floor or a choice already fixed it")
-            profile = store.profile_for(cfg, {"model": args[2]}, store.project_root(exp_dir))
-            if cfg.task not in profile.tasks:
-                raise ValueError(f"model {profile.key!r} does not support {cfg.task}")
-            cfg.model = profile.key
-            cfg.versions["model_revision"] = profile.revision
-            ex._dump_yaml(exp_dir / "experiment.yaml", cfg)
-            state.model_locked = True
-            ex.save_state(exp_dir, state)
+            with ex.state_lock(exp_dir):
+                cfg, _, state = ex.load(exp_dir)
+                if state.model_locked:
+                    raise ValueError(f"model is locked ({cfg.model}); the noise floor or a choice already fixed it")
+                profile = store.profile_for(cfg, {"model": args[2]}, store.project_root(exp_dir))
+                if cfg.task not in profile.tasks:
+                    raise ValueError(f"model {profile.key!r} does not support {cfg.task}")
+                cfg.model = profile.key
+                cfg.versions["model_revision"] = profile.revision
+                ex._dump_yaml(exp_dir / "experiment.yaml", cfg)
+                state.model_locked = True
+                ex.save_state(exp_dir, state)
             emit({"model": profile.key, "revision": profile.revision, "model_locked": True})
             return
         if len(args) != 1:
@@ -199,28 +230,30 @@ def bakeoff(
         exp_dir = _exp(args[0])
         cfg, _, state = ex.load(exp_dir)
         if models is None:
-            emit({"bakeoff": state.bakeoff, "pending": _pending(exp_dir, "bakeoff")})
+            emit({"bakeoff": state.bakeoff, "pending": len(_requests(exp_dir, "bakeoff", pending_only=True))})
             return
-        if state.model_locked:
-            raise ValueError(f"model is locked ({cfg.model}); a bake-off is only possible before it is fixed")
-        _verify(exp_dir)
-        keys = [k.strip() for k in models.split(",") if k.strip()]
-        if len(keys) < 2 or len(set(keys)) != len(keys):
-            raise ValueError("--models needs at least two distinct model keys")
-        profiles = load_profiles(store.project_root(exp_dir))
-        for k in keys:
-            if k not in profiles:
-                raise ValueError(f"unknown model {k!r}; see `finetune-kit models`")
-            if cfg.task not in profiles[k].tasks:
-                raise ValueError(f"model {k!r} does not support {cfg.task}")
-        bid = store.now()
-        ids = [
-            store.new_run(
-                exp_dir, "bakeoff", {"model": k}, list(range(cfg.seeds)), f"bake-off {k}",
-                extra={"bakeoff_id": bid},
-            )
-            for k in keys
-        ]
+        with ex.state_lock(exp_dir):
+            cfg, _, state = ex.load(exp_dir)
+            if state.model_locked:
+                raise ValueError(f"model is locked ({cfg.model}); a bake-off is only possible before it is fixed")
+            _verify(exp_dir)
+            keys = [k.strip() for k in models.split(",") if k.strip()]
+            if len(keys) < 2 or len(set(keys)) != len(keys):
+                raise ValueError("--models needs at least two distinct model keys")
+            profiles = load_profiles(store.project_root(exp_dir))
+            for k in keys:
+                if k not in profiles:
+                    raise ValueError(f"unknown model {k!r}; see `finetune-kit models`")
+                if cfg.task not in profiles[k].tasks:
+                    raise ValueError(f"model {k!r} does not support {cfg.task}")
+            bid = store.now()
+            ids = [
+                store.new_run(
+                    exp_dir, "bakeoff", {"model": k}, list(range(cfg.seeds)), f"bake-off {k}",
+                    extra={"bakeoff_id": bid},
+                )
+                for k in keys
+            ]
         for rid in ids:
             queue.enqueue(exp_dir, rid)
     emit({"run_ids": ids, "models": keys, "status": "queued"})
@@ -255,12 +288,13 @@ def wait(
 
     Example: finetune-kit wait r007 --exp 001
     """
-    from finetune_kit import store
+    from finetune_kit import queue, store
 
     with _errors():
         exp_dir = _exp(exp)
         t0 = time.monotonic()
         while True:
+            queue.ensure_daemon()  # restarts a dead worker if runs are still queued
             req = store.read_request(exp_dir, run_id)
             if req["status"] in store.TERMINAL:
                 emit(_wait_payload(exp_dir, req))
@@ -293,7 +327,8 @@ def status(exp: Optional[str] = typer.Argument(None, help="Only show runs of thi
                 running = {**item, "started": req.get("started"), "pid": req.get("pid")}
             else:
                 items.append(item)
-    emit({"queue": items, "running": running, "worker_pid": queue.worker_pid()})
+        pid = queue.ensure_daemon() or queue.worker_pid()  # restarts a dead worker
+    emit({"queue": items, "running": running, "worker_pid": pid})
 
 
 @app.command("_worker", hidden=True)

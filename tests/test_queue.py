@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import time
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +12,7 @@ from finetune_kit.cli import app
 from finetune_kit.paths import kit_home
 
 NOISE = [0.7241, 0.6682, 0.6698]
-ENV = {"FINETUNE_KIT_FAKE_TRAIN": "1", "FINETUNE_KIT_NO_DAEMON": "1", "FINETUNE_KIT_TEST_PROFILES": "1"}
+ENV = {"FINETUNE_KIT_TESTING": "1", "FINETUNE_KIT_FAKE_TRAIN": "1", "FINETUNE_KIT_NO_DAEMON": "1", "FINETUNE_KIT_TEST_PROFILES": "1"}
 
 
 @pytest.fixture(autouse=True)
@@ -423,3 +424,208 @@ def test_detached_daemon_end_to_end(exp, runner, monkeypatch):
     while (kit_home() / "worker.lock").exists() and time.time() < deadline:
         time.sleep(0.1)
     assert not (kit_home() / "worker.lock").exists()  # daemon exited on empty queue
+
+
+# --- fix round 1 -------------------------------------------------------------------------------
+
+
+def _write_cfg(exp_dir, cfg):
+    (exp_dir / "experiment.yaml").write_text(__import__("yaml").safe_dump(cfg.model_dump(mode="json")))
+
+
+def test_noise_refused_once_done(exp_with_noise, runner):  # 1
+    r = _run(runner, exp_with_noise, {}, "--stage", "noise")
+    assert r.exit_code == 2 and "new experiment" in _out(r)["error"]
+
+
+def test_noise_refused_while_pending_allowed_after_crash(exp, runner):  # 1
+    rid = _out(_run(runner, exp, {}, "--stage", "noise"))["run_id"]
+    r = _run(runner, exp, {}, "--stage", "noise")
+    assert r.exit_code == 2 and "new experiment" in _out(r)["error"]
+    queue.worker_loop()  # no "_fake" -> crash
+    assert _request(exp, rid)["status"] == "crash"
+    assert _run(runner, exp, {}, "--stage", "noise").exit_code == 0
+
+
+def test_lr_scan_refused_after_noise(exp, runner):  # 2
+    assert _run(runner, exp, {}, "--stage", "noise").exit_code == 0  # pending is enough
+    r = runner.invoke(app, ["lr-scan", exp.name])
+    assert r.exit_code == 2 and "noise floor" in _out(r)["error"]
+
+
+def test_noise_refused_while_lr_scan_pending(exp, runner):  # 2
+    assert runner.invoke(app, ["lr-scan", exp.name]).exit_code == 0
+    r = _run(runner, exp, {}, "--stage", "noise")
+    assert r.exit_code == 2 and "LR scan" in _out(r)["error"]
+
+
+def test_save_state_is_atomic(exp, monkeypatch):  # 3
+    replaced = []
+    real = os.replace
+    monkeypatch.setattr(ex.os, "replace", lambda a, b: (replaced.append(Path(b).name), real(a, b)))
+    ex.save_state(exp, ex.State(round=7))
+    assert replaced == ["state.json"] and ex.load(exp)[2].round == 7
+
+
+def test_failed_verdict_still_counts(exp_with_noise, runner):  # 3
+    shutil.rmtree(exp_with_noise / "runs" / "r001" / "seed_0")
+    shutil.rmtree(exp_with_noise / "runs" / "r001" / "seed_1")
+    shutil.rmtree(exp_with_noise / "runs" / "r001" / "seed_2")  # best run unreadable
+    rid = _research(runner, exp_with_noise, [0.75, 0.74, 0.76])
+    req = _request(exp_with_noise, rid)
+    assert req["verdict"] == "discard" and "verdict failed" in req["error"]
+    st = ex.load(exp_with_noise)[2]
+    assert st.runs_used == 1 and st.non_keep_streak == 1
+    assert rid in store.result_run_ids(exp_with_noise)
+
+
+def test_parallel_runs_respect_budget(exp_with_noise, tmp_path):  # 4
+    import subprocess
+    import sys
+
+    cfg = ex.load(exp_with_noise)[0]
+    cfg.budget.max_runs = 2
+    _write_cfg(exp_with_noise, cfg)
+    cmd = [sys.executable, "-m", "finetune_kit.cli", "run", str(exp_with_noise), "--config", '{"dropout": 0.2}']
+    procs = [subprocess.Popen(cmd, cwd=tmp_path, stdout=subprocess.PIPE, text=True) for _ in range(6)]
+    codes = [p.wait(timeout=60) for p in procs]
+    for p in procs:
+        p.stdout.close()
+    assert sorted(codes) == [0, 0, 2, 2, 2, 2]
+    assert len([r for r in store.list_requests(exp_with_noise) if r["stage"] == "research"]) == 2
+
+
+def test_tamper_after_enqueue_crashes_at_execution(exp_with_noise, runner):  # 5
+    rid = _out(_run(runner, exp_with_noise, {"dropout": 0.2}))["run_id"]
+    _inject(exp_with_noise, rid, [0.9, 0.9, 0.9])
+    (exp_with_noise / "splits" / "val.jsonl").write_text("tampered\n")
+    queue.worker_loop()
+    req = _request(exp_with_noise, rid)
+    assert req["status"] == "crash" and req["verdict"] == "discard"
+    assert "refused at execution" in req["error"] and "changed" in req["error"]
+    assert not (exp_with_noise / "runs" / rid / "seed_0").exists()
+    assert ex.load(exp_with_noise)[2].runs_used == 1
+
+
+def test_config_revalidated_at_execution(exp_with_noise, runner):  # 5
+    rid = _out(_run(runner, exp_with_noise, {"dropout": 0.2}))["run_id"]
+    _inject(exp_with_noise, rid, [0.9, 0.9, 0.9])
+    ex.commit_space(exp_with_noise, ex.SearchSpace(round=0, tunable=["lr"], losses=["ce"]))
+    queue.worker_loop()
+    req = _request(exp_with_noise, rid)
+    assert req["status"] == "crash" and "dropout" in req["error"]
+
+
+def test_scanned_lr_not_revalidated_as_agent_key(exp, runner):  # 5
+    st = ex.load(exp)[2]
+    st.sigma_obj, st.sigma_guard, st.best_run = 0.03, 0.0, None
+    st.lr_scan_best = 3e-4
+    ex.save_state(exp, st)
+    ex.commit_space(exp, ex.SearchSpace(round=0, tunable=["dropout"], losses=["ce"]))  # lr locked
+    rid = _out(_run(runner, exp, {"dropout": 0.2}))["run_id"]
+    assert _request(exp, rid)["overrides"] == {"lr": 3e-4, "dropout": 0.2}
+    _inject(exp, rid, [0.9, 0.9, 0.9])
+    queue.worker_loop()
+    assert _request(exp, rid)["status"] == "done"
+
+
+def _mock_popen(monkeypatch):
+    calls = []
+
+    class FakeProc:
+        pid = os.getpid()
+
+    monkeypatch.setattr(queue.subprocess, "Popen", lambda cmd, **kw: (calls.append(cmd), FakeProc())[1])
+    return calls
+
+
+@pytest.mark.parametrize("command", ["status", "wait"])
+def test_dead_daemon_restarted(exp, runner, monkeypatch, command):  # 6
+    rid = store.new_run(exp, "noise", {}, [0], "a")
+    queue.enqueue(exp, rid)  # NO_DAEMON: nothing spawned
+    kit_home().joinpath("worker.lock").write_text("999999")  # daemon died
+    monkeypatch.delenv("FINETUNE_KIT_NO_DAEMON")
+    calls = _mock_popen(monkeypatch)
+    args = ["status"] if command == "status" else ["wait", rid, "--exp", exp.name, "--timeout", "0"]
+    out = _out(runner.invoke(app, args))
+    assert len(calls) == 1 and calls[0][1:] == ["-m", "finetune_kit.cli", "_worker"]
+    if command == "status":
+        assert out["worker_pid"] == os.getpid()
+
+
+def test_status_does_not_spawn_on_empty_queue(runner, monkeypatch):  # 6
+    monkeypatch.delenv("FINETUNE_KIT_NO_DAEMON")
+    calls = _mock_popen(monkeypatch)
+    assert _out(runner.invoke(app, ["status"]))["worker_pid"] is None and calls == []
+
+
+def test_recover_kills_orphaned_training_group(exp):  # 7
+    import subprocess
+
+    child = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    rid = store.new_run(exp, "noise", {}, [0, 1, 2], "noise")
+    queue.enqueue(exp, rid)
+    req = _request(exp, rid)
+    req.update(status="running", pid=999999, child_pid=child.pid)
+    (exp / "runs" / rid / "request.json").write_text(json.dumps(req))
+    queue.recover_stale()
+    assert child.wait(timeout=5) == -9
+    assert _request(exp, rid)["child_pid"] is None
+
+
+def test_seed_runs_in_own_session_and_pid_recorded(exp_with_noise, runner, monkeypatch):  # 7
+    seen = []
+    real = queue.subprocess.Popen
+
+    def spy(cmd, **kw):
+        seen.append(kw.get("start_new_session"))
+        return real(cmd, **kw)
+
+    monkeypatch.setattr(queue.subprocess, "Popen", spy)
+    writes = []
+    real_write = store.write_request
+    monkeypatch.setattr(store, "write_request", lambda e, r, q: (writes.append(q.get("child_pid")), real_write(e, r, q)))
+    _research(runner, exp_with_noise, [0.75, 0.74, 0.76])
+    assert seen == [True, True, True]
+    assert sum(1 for w in writes if w) == 3
+
+
+def test_finalize_is_idempotent(exp_with_noise, runner):  # 8
+    rid = _research(runner, exp_with_noise, [0.75, 0.74, 0.76])
+    before = ex.load(exp_with_noise)[2]
+    req = _request(exp_with_noise, rid)
+    queue._finalize(exp_with_noise, req, req["seed_status"])
+    after = ex.load(exp_with_noise)[2]
+    assert after.runs_used == before.runs_used == 1 and after.hours_used == before.hours_used
+    rows = (exp_with_noise / "results.tsv").read_text().splitlines()
+    assert [r.split("\t")[0] for r in rows[1:]] == ["r001", rid]
+    assert _request(exp_with_noise, rid)["verdict"] == "keep"
+
+
+def test_finalizing_run_recovered_without_retraining(exp_with_noise, runner):  # 8
+    rid = _research(runner, exp_with_noise, [0.75, 0.74, 0.76])
+    req = _request(exp_with_noise, rid)
+    # simulate: worker died after saving state, before the row and terminal request
+    lines = (exp_with_noise / "results.tsv").read_text().splitlines()
+    (exp_with_noise / "results.tsv").write_text("\n".join(lines[:-1]) + "\n")
+    req.update(status="finalizing", outcome="done", pid=999999)
+    req.pop("verdict")
+    (exp_with_noise / "runs" / rid / "request.json").write_text(json.dumps(req))
+    queue.enqueue(exp_with_noise, rid)
+    out = queue.recover_stale()
+    assert out[0]["retried"] is False
+    req = _request(exp_with_noise, rid)
+    assert req["status"] == "done" and req["verdict"] == "keep" and req["retries"] == 0
+    assert ex.load(exp_with_noise)[2].runs_used == 1
+    assert rid in store.result_run_ids(exp_with_noise)
+    assert queue.read_queue() == []
+
+
+def test_test_envs_need_testing_flag(exp, monkeypatch):  # minor 9
+    monkeypatch.delenv("FINETUNE_KIT_TESTING")
+    monkeypatch.setenv("FINETUNE_KIT_TIMEOUT_S", "0.01")
+    st = ex.State(baseline_train_s=10.0)
+    assert queue.timeout_for(exp, "research", st) == 30.0
+    calls = _mock_popen(monkeypatch)  # FINETUNE_KIT_NO_DAEMON=1 is still set, but ignored
+    queue.enqueue(exp, store.new_run(exp, "noise", {}, [0], "a"))
+    assert len(calls) == 1
