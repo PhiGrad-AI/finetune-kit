@@ -177,3 +177,46 @@ def test_token_cls_flow(_env, tmp_path):
     test_m = json.loads((proj / "experiments" / name / "final" / "test_metrics.json").read_text())
     assert test_m["objective_metric"] == "entity_f1" and isfinite(test_m["objective"])
     assert test_m["report"]["entity_f1"] == test_m["objective"]
+
+
+def _noise_run_ok(name: str) -> None:
+    noise = cli("run", name, "--stage", "noise")
+    out = drain(name, noise["run_id"])[0]
+    assert out["verdict"] == "baseline"
+    assert all(isfinite(s["objective"]) for s in out["seeds"]), out
+
+
+def test_e2e_csv_source(_env):
+    proj = _env
+    rows = seq_rows()
+    lines = ["row,prompt,is_injection"] + [f'{r["id"]},"{r["text"]}",{r["label"]}' for r in rows]
+    (proj / "data.csv").write_text("\n".join(lines) + "\n")
+    cols = '{"text":"prompt","label":"is_injection"}'
+
+    insp = cli("inspect-data", "--train", "data.csv")
+    assert isinstance(insp, dict)
+
+    name = cli("new", "csvexp", "--task", "seq-cls", "--model", "tiny-bert", "--train", "data.csv",
+               "--columns", cols, "--metric", "pauc_hi", "--seeds", 2)["experiment"]
+    chk = cli("check-data", name)
+    assert chk["errors"] == [] and set(chk["label_dist"]["train"]) == {"0", "1"}
+    _noise_run_ok(name)
+
+
+def test_e2e_hf_source(_env, hf_fake):
+    rows = [{"text": r["text"], "label": r["label"]} for r in seq_rows(72)]
+    hf_fake({"train": rows[:48], "validation": rows[48:60], "test": rows[60:]})
+
+    insp = cli("inspect-data", "--source", "hf:fake/ds")
+    assert isinstance(insp, dict)
+
+    name = cli("new", "hfexp", "--task", "seq-cls", "--model", "tiny-bert", "--source", "hf:fake/ds",
+               "--metric", "pauc_hi", "--seeds", 2)["experiment"]
+    chk = cli("check-data", name)
+    assert chk["errors"] == []
+    exp_dir = _env / "experiments" / name
+    frozen = [json.loads(l) for l in (exp_dir / "splits" / "train.jsonl").read_text().splitlines()]
+    assert {r["label"] for r in frozen} == {"benign", "injection"}
+    report = json.loads((exp_dir / "data-report.json").read_text())
+    assert set(report["split_origin"].values()) == {"published"}
+    _noise_run_ok(name)
