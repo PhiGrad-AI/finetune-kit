@@ -64,3 +64,8 @@ def test_fail_emits_error_json(runner):
 
     r = runner.invoke(t, ["boom"])
     assert r.exit_code == 2 and json.loads(r.stdout) == {"error": "nope"}
+
+
+def test_init_force_help_warns_about_tamper_check(runner):
+    r = runner.invoke(app, ["init", "--help"], env={"COLUMNS": "200"})
+    assert "tamper check" in " ".join(r.stdout.split())

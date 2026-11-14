@@ -212,3 +212,8 @@ def test_validate_config_rejects_non_finite_numbers():
     for key, val in (("lr", math.inf), ("warmup", math.nan), ("msd_samples", math.inf), ("lr", -math.inf)):
         errs = validate_config({key: val}, tunable, ["ce"], DEFAULTS, "seq-cls")
         assert errs and "finite" in errs[0], (key, val, errs)
+
+
+def test_not_tunable_hint_is_agent_neutral():
+    errs = validate_config({"warmup": 0.1}, ["lr"], ["ce"], DEFAULTS, "seq-cls")
+    assert errs == ["warmup is not tunable (locked at 0.05); re-run the hparams stage to open it"]

@@ -91,7 +91,8 @@ def test_seq_cls_full_flow(_env, tmp_path):
     name = cli("new", "e2e", "--task", "seq-cls", "--model", "tiny-bert", "--train", data,
                "--metric", "pauc_hi", "--seeds", 2)["experiment"]
     chk = cli("check-data", name)
-    assert chk  # splits frozen, test moved to the vault
+    assert chk["n_rows"] == {"train": 48, "val": 6, "test": 6} and chk["errors"] == []
+    assert set(chk["label_dist"]["train"]) == {"0", "1"} and chk["unseen_labels"] == []
     exp_dir = proj / "experiments" / name
     assert (exp_dir / "splits" / "train.jsonl").is_file() and not (exp_dir / "splits" / "test.jsonl").exists()
     assert list((tmp_path / "kit-home" / "vault").glob("*/test.jsonl"))
@@ -139,7 +140,8 @@ def test_seq_cls_full_flow(_env, tmp_path):
     for f in ("recipe.json", "test_metrics.json", "throughput.json", "predict.py"):
         assert (final / f).is_file(), f
     test_m = json.loads((final / "test_metrics.json").read_text())
-    assert "pauc_hi" in json.dumps(test_m)
+    assert test_m["headline"]["metric"] == "pauc_hi" and isfinite(test_m["headline"]["value"])
+    assert isfinite(test_m["report"]["pauc_hi"]) and test_m["n_rows"] == 6
 
     rows = tmp_path / "rows.jsonl"
     out = tmp_path / "scores.jsonl"
@@ -150,7 +152,10 @@ def test_seq_cls_full_flow(_env, tmp_path):
     )
     assert p.returncode == 0, p.stderr
     scores = [json.loads(l) for l in out.read_text().splitlines()]
-    assert len(scores) == 6 and all(s for s in scores)
+    assert [s["id"] for s in scores] == [f"r{i}" for i in range(6)]
+    for s in scores:
+        assert isinstance(s["score"], float) and isfinite(s["score"]) and 0.0 <= s["score"] <= 1.0, s
+        assert s["label"] in ("0", "1"), s
 
 
 def test_token_cls_flow(_env, tmp_path):
@@ -170,4 +175,5 @@ def test_token_cls_flow(_env, tmp_path):
     pr = cli("promote", name, noise["run_id"], "--seeds", 1)
     drain(name, pr["run_id"])
     test_m = json.loads((proj / "experiments" / name / "final" / "test_metrics.json").read_text())
-    assert "entity_f1" in json.dumps(test_m)
+    assert test_m["objective_metric"] == "entity_f1" and isfinite(test_m["objective"])
+    assert test_m["report"]["entity_f1"] == test_m["objective"]
