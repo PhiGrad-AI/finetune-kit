@@ -39,6 +39,12 @@ def _score(m: metrics.Metric, params: dict, task: str, truth, out, pos: int) -> 
     return m.fn(truth, out, merged) if task == "token-cls" else m.fn(truth, out, merged, pos)
 
 
+def _write_metrics(seed_dir: Path, out: dict) -> None:
+    tmp = seed_dir / "metrics.json.tmp"
+    tmp.write_text(json.dumps(out, indent=2))
+    os.replace(tmp, seed_dir / "metrics.json")
+
+
 def _fake(request: dict, seed: int, seed_dir: Path) -> None:
     seeds = request["seeds"]
     i = seeds.index(seed)
@@ -50,7 +56,7 @@ def _fake(request: dict, seed: int, seed_dir: Path) -> None:
         "train_s": request.get("_fake_train_s", 1.0), "peak_gb": 0.0, "n_truncated": 0,
         "best_epoch": 0.0, "device": "fake",
     }
-    (seed_dir / "metrics.json").write_text(json.dumps(out, indent=2))
+    _write_metrics(seed_dir, out)
 
 
 def _real(exp_dir: Path, request: dict, seed: int, seed_dir: Path) -> None:
@@ -102,24 +108,27 @@ def _real(exp_dir: Path, request: dict, seed: int, seed_dir: Path) -> None:
     guardrail = (
         _score(guard_m, exp.guardrail.params, task, truth, res.val_out, pos) if guard_m else None
     )
-    report = {}
+    report, report_errors = {}, {}
     for m in metrics.list_for(task):
         if m.needs_positive and len(labels) > 2:
             continue
         try:
             report[m.name] = _num(_score(m, {}, task, truth, res.val_out, pos))
-        except Exception:
-            continue
+        except (ValueError, IndexError) as e:  # not applicable, e.g. val without positives; others are bugs
+            report[m.name] = None
+            report_errors[m.name] = str(e)
     out = {
         "objective": _num(objective), "guardrail": _num(guardrail), "report": report,
+        "report_errors": report_errors,
         "train_s": res.train_s, "peak_gb": res.peak_gb, "n_truncated": res.n_truncated,
         "best_epoch": res.best_epoch, "device": device,
     }
-    (seed_dir / "metrics.json").write_text(json.dumps(out, indent=2))
+    # preds first; metrics.json is the completion marker, so it is written last and atomically
     if task == "seq-cls":
         np.save(seed_dir / "val_preds.npy", res.val_out)
     else:
         (seed_dir / "val_preds.json").write_text(json.dumps(res.val_out))
+    _write_metrics(seed_dir, out)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -131,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = a.exp / "runs" / a.run
     seed_dir = run_dir / f"seed_{a.seed}"
     seed_dir.mkdir(parents=True, exist_ok=True)
+    for stale in ("metrics.json", "error.txt"):  # a rerun never leaves both behind
+        (seed_dir / stale).unlink(missing_ok=True)
     try:
         request = json.loads((run_dir / "request.json").read_text())
         if os.environ.get("FINETUNE_KIT_FAKE_TRAIN") == "1":
@@ -138,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _real(a.exp, request, a.seed, seed_dir)
     except Exception as e:
+        (seed_dir / "metrics.json").unlink(missing_ok=True)
         (seed_dir / "error.txt").write_text(f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}")
         print(f"{type(e).__name__}: {e}", file=sys.stderr)
         return 1
