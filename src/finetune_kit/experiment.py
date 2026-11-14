@@ -1,5 +1,6 @@
 import fcntl
 import hashlib
+import json
 import os
 import re
 import tempfile
@@ -208,10 +209,51 @@ def record_checksums(exp_dir: Path, project_root: Path) -> State:
     return state
 
 
+CONFIG_KEY = "experiment.yaml"
+PROFILE_KEY = "model-profile"
+
+
+def profile_sha(profile) -> str:
+    from finetune_kit.profiles import to_dict
+
+    return hashlib.sha256(json.dumps(to_dict(profile), sort_keys=True).encode()).hexdigest()
+
+
+def record_baseline_checksums(exp_dir: Path, profile) -> State:
+    """At the first noise enqueue: pin experiment.yaml and the resolved model profile."""
+    exp_dir = Path(exp_dir)
+    with state_lock(exp_dir):
+        _, _, state = load(exp_dir)
+        state.checksums[CONFIG_KEY] = _sha(exp_dir / "experiment.yaml")
+        state.checksums[PROFILE_KEY] = profile_sha(profile)
+        save_state(exp_dir, state)
+    return state
+
+
+def _baseline_problems(exp_dir: Path, project_root: Path, cfg: ExperimentConfig, state: State) -> list[str]:
+    bad = []
+    if CONFIG_KEY in state.checksums and _sha(exp_dir / "experiment.yaml") != state.checksums[CONFIG_KEY]:
+        bad.append(f"{CONFIG_KEY} (changed)")
+    if PROFILE_KEY in state.checksums:
+        from finetune_kit.profiles import load_profiles
+
+        name = f"model profile {cfg.model!r}"
+        try:
+            profile = load_profiles(project_root).get(cfg.model)
+        except ValueError as e:
+            bad.append(f"{name} (unreadable: {e})")
+            return bad
+        if profile is None:
+            bad.append(f"{name} (missing)")
+        elif profile_sha(profile) != state.checksums[PROFILE_KEY]:
+            bad.append(f"{name} (changed)")
+    return bad
+
+
 def verify_checksums(exp_dir: Path, project_root: Path) -> None:
     exp_dir, project_root = Path(exp_dir), Path(project_root)
-    _, _, state = load(exp_dir)
-    bad = []
+    cfg, _, state = load(exp_dir)
+    bad = _baseline_problems(exp_dir, project_root, cfg, state)
     for p in protected_files(exp_dir, project_root):
         key = _key(p, exp_dir, project_root)
         if key not in state.checksums:
