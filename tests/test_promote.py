@@ -1,5 +1,7 @@
 import json
+import os
 import random
+import shutil
 import re
 import subprocess
 import sys
@@ -158,7 +160,12 @@ def test_promote_writes_final(promoted):
     assert {"finetune-kit", "torch", "transformers"} <= set(recipe["versions"])
     assert recipe["source_run"] == src and recipe["labels"] == ["0", "1"]
     test_m = json.loads((final / "test_metrics.json").read_text())
-    assert test_m["n_rows"] == 12 and test_m["objective"] is not None
+    assert test_m["n_rows"] == 12 and test_m["promote_run"] == result["run_id"]
+    # skip_at_recall on test re-fits its threshold on test labels: labelled, not the headline
+    assert "objective" not in test_m and test_m["objective_oracle_threshold"] is not None
+    assert test_m["headline"] == {
+        "metric": "skip_at_recall", "source": "at_threshold.skip", "value": test_m["at_threshold"]["skip"],
+    }
     assert "accuracy" in test_m["report"] and test_m["objective_metric"] == "skip_at_recall"
     state = ex.load(d)[2]
     assert state.promoted is True and state.promote_pending is None
@@ -218,7 +225,9 @@ def test_no_threshold_for_f1(promoted_f1):
     d, _, result = promoted_f1
     assert result["status"] == "done", result
     assert not (d / "final" / "threshold.json").exists() and result["threshold"] is None
-    assert "at_threshold" not in json.loads((d / "final" / "test_metrics.json").read_text())
+    test_m = json.loads((d / "final" / "test_metrics.json").read_text())
+    assert "at_threshold" not in test_m
+    assert test_m["headline"] == {"metric": "f1", "source": "objective", "value": test_m["objective"]}
 
 
 def test_throughput_written(promoted):
@@ -299,3 +308,114 @@ def test_read_test_only_called_by_promote():
         if re.search(r"(?<!def )\bread_test\(", p.read_text())
     )
     assert callers == ["promote.py"]
+
+
+def test_crash_between_test_scoring_and_state_update(tmp_path, monkeypatch):
+    from finetune_kit import data
+    from finetune_kit import promote as pr
+
+    d = _make_exp(tmp_path, objective="f1", guardrail=None)
+    rid = _finished(d, "research", {"dropout": 0.2}, "keep")
+
+    def boom(exp_dir):
+        raise RuntimeError("killed before state.promoted was saved")
+
+    monkeypatch.setattr(pr, "_mark_promoted", boom)
+    first = promote(d, rid, seeds=1, sync=True)
+    assert "error" in first
+    scored = json.loads((d / "final" / "test_metrics.json").read_text())  # written before the state
+    assert scored["promote_run"] == first["run_id"] and ex.load(d)[2].promoted is False
+    with pytest.raises(ValueError, match="already promoted"):  # the test counts as used
+        promote(d, rid)
+
+    monkeypatch.undo()
+    for k, v in ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(data, "read_test", lambda uid: pytest.fail("test split read twice"))
+    resumed = pr.finish(d, store.read_request(d, first["run_id"]))  # what recover_stale re-runs
+    assert "error" not in resumed, resumed
+    assert resumed["test_metrics"] == scored and ex.load(d)[2].promoted is True
+    assert (d / "final" / "predict.py").is_file()
+
+
+MODELING = """\
+from torch import nn
+from transformers import PreTrainedModel
+from transformers.modeling_outputs import BaseModelOutput
+
+from .configuration_tinyremote import TinyRemoteConfig
+
+
+class TinyRemoteModel(PreTrainedModel):
+    config_class = TinyRemoteConfig
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.embed = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.post_init()
+
+    def forward(self, input_ids=None, attention_mask=None, **kw):
+        return BaseModelOutput(last_hidden_state=self.embed(input_ids))
+"""
+CONFIGURATION = """\
+from transformers import PretrainedConfig
+
+
+class TinyRemoteConfig(PretrainedConfig):
+    model_type = "tinyremote"
+
+    def __init__(self, vocab_size=2000, hidden_size=8, num_hidden_layers=1, **kw):
+        self.vocab_size, self.hidden_size, self.num_hidden_layers = vocab_size, hidden_size, num_hidden_layers
+        super().__init__(**kw)
+"""
+
+
+def test_remote_code_model_saved_self_contained(tmp_path):
+    """A trust_remote_code backbone exports its code files; auto_map resolves inside model/."""
+    from transformers import AutoConfig, AutoModel, AutoTokenizer
+
+    from finetune_kit.profiles import load_profiles
+    from finetune_kit.promote import save_model
+    from finetune_kit.train.config import build_config
+    from finetune_kit.train.models import SeqClassifier
+
+    repo = tmp_path / "hub" / "tinyremote"
+    repo.mkdir(parents=True)
+    (repo / "modeling_tinyremote.py").write_text(MODELING)
+    (repo / "configuration_tinyremote.py").write_text(CONFIGURATION)
+    (repo / "config.json").write_text(json.dumps({
+        "model_type": "tinyremote", "vocab_size": 2000, "hidden_size": 8, "num_hidden_layers": 1,
+        "auto_map": {"AutoConfig": "configuration_tinyremote.TinyRemoteConfig",
+                     "AutoModel": "modeling_tinyremote.TinyRemoteModel"},
+    }))
+    tiny = load_profiles(None)["tiny-bert"]
+    AutoTokenizer.from_pretrained(tiny.hf_id).save_pretrained(repo)
+    profile = type(tiny)(**{**tiny.__dict__, "key": "tinyremote", "hf_id": str(repo), "trust_remote_code": True})
+    backbone = AutoModel.from_config(AutoConfig.from_pretrained(repo, trust_remote_code=True), trust_remote_code=True)
+    cfg = build_config({}, profile, "seq-cls", 0)
+    model = SeqClassifier(backbone, 2, cfg)
+
+    out = tmp_path / "model"
+    save_model(model, profile, out)
+    assert (out / "modeling_tinyremote.py").is_file() and (out / "configuration_tinyremote.py").is_file()
+    auto_map = json.loads((out / "config.json").read_text())["auto_map"]
+    assert auto_map["AutoModel"] == "modeling_tinyremote.TinyRemoteModel"
+    assert auto_map["AutoConfig"] == "configuration_tinyremote.TinyRemoteConfig"
+    assert not any("--" in v for v in auto_map.values())
+
+    shutil.rmtree(repo)  # the export must not need the source repo, the hub or the module cache
+    script = (
+        "import sys, torch; from pathlib import Path; "
+        "from finetune_kit.promote import load_model; from finetune_kit.train.config import build_config; "
+        "from finetune_kit.profiles import load_profiles; "
+        "p = load_profiles(None)['tiny-bert']; p.trust_remote_code = True; "
+        "cfg = build_config({}, p, 'seq-cls', 0); "
+        "m, tok = load_model(Path(sys.argv[1]), cfg, p, 2, 'cpu'); "
+        "print(type(m.backbone).__name__)"
+    )
+    env = {**os.environ, "HF_HUB_OFFLINE": "1", "HF_MODULES_CACHE": str(tmp_path / "fresh-modules")}
+    p = subprocess.run([sys.executable, "-c", script, str(out)], capture_output=True, text=True, env=env)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.strip().endswith("TinyRemoteModel")
+    state = __import__("torch").load(out / "classifier.pt", weights_only=True)
+    assert "backbone.embed.weight" in state

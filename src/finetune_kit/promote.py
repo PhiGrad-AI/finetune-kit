@@ -38,7 +38,7 @@ def _request(exp_dir: Path, run_id: str, seeds: int) -> str:
     with ex.state_lock(exp_dir):
         ex.verify_checksums(exp_dir, store.project_root(exp_dir))
         _, _, state = ex.load(exp_dir)
-        if state.promoted:
+        if state.promoted or (exp_dir / "final" / "test_metrics.json").is_file():
             raise ValueError("already promoted; test is scored once")
         if state.promote_pending and _is_pending(exp_dir, state.promote_pending):
             raise ValueError(
@@ -87,8 +87,38 @@ def promote(exp_dir: Path, run_id: str, seeds: int = 3, sync: bool = False) -> d
 # ---- model save / load ----
 
 
+def _local_ref(ref):
+    """`org/repo--module.Class` -> `module.Class` (also inside tokenizer [slow, fast] pairs)."""
+    if isinstance(ref, (list, tuple)):
+        return [_local_ref(r) for r in ref]
+    return ref.split("--", 1)[1] if isinstance(ref, str) and "--" in ref else ref
+
+
+def _localise_auto_map(path: Path, pins: dict[str, str]) -> None:
+    if not path.is_file():
+        return
+    d = json.loads(path.read_text())
+    if "auto_map" not in d and not pins:
+        return
+    d["auto_map"] = {**{k: _local_ref(v) for k, v in (d.get("auto_map") or {}).items()}, **pins}
+    path.write_text(json.dumps(d, indent=2))
+
+
+def _save_remote_code(base, model_dir: Path) -> None:
+    """Copy the custom modeling/config code next to the weights so auto_map resolves offline."""
+    from transformers.dynamic_module_utils import custom_object_save
+
+    pins = {}
+    for obj, auto in ((base, "AutoModel"), (base.config, "AutoConfig")):
+        if not type(obj).__module__.startswith("transformers."):  # built-in classes need no code
+            custom_object_save(obj, model_dir)
+            pins[auto] = f"{type(obj).__module__.rsplit('.', 1)[-1]}.{type(obj).__name__}"
+    _localise_auto_map(model_dir / "config.json", pins)
+    _localise_auto_map(model_dir / "tokenizer_config.json", {})
+
+
 def save_model(model, profile, model_dir: Path) -> None:
-    """Backbone config + tokenizer (save_pretrained) and the full classifier state dict."""
+    """Backbone config + tokenizer (save_pretrained), remote code if any, and the classifier state dict."""
     import torch
     from transformers import AutoTokenizer
 
@@ -101,6 +131,8 @@ def save_model(model, profile, model_dir: Path) -> None:
         profile.hf_id, revision=profile.revision, trust_remote_code=profile.trust_remote_code
     )
     tok.save_pretrained(model_dir)
+    if profile.trust_remote_code:
+        _save_remote_code(base, model_dir)
     torch.save({k: v.detach().cpu() for k, v in model.state_dict().items()}, model_dir / "classifier.pt")
 
 
@@ -270,8 +302,44 @@ def _ensure_model(ctx, device: str) -> None:
         ctx.model, ctx.tok = load_model(ctx.model_src, ctx.cfg, ctx.profile, len(ctx.labels), device)
 
 
+# constrained objective -> the honest at_threshold field it corresponds to
+_AT_FIELD = {"skip_at_recall": "skip", "precision_at_recall": "precision", "recall_at_precision": "recall"}
+
+
+def _label_test(exp_dir: Path, ctx, scored: dict) -> None:
+    """A constrained objective on test re-fits its threshold on test labels (in-sample): rename it,
+    and point `headline` at the val-threshold number instead."""
+    from finetune_kit.train import worker
+
+    name = ctx.exp.objective.metric
+    if not worker._metric(ctx.exp, ctx.exp.objective, exp_dir).constrained:
+        scored["headline"] = {"metric": name, "source": "objective", "value": scored["objective"]}
+        return
+    scored["objective_oracle_threshold"] = scored.pop("objective")
+    field = _AT_FIELD.get(name)
+    at = scored.get("at_threshold")
+    if at is not None and field is not None:
+        scored["headline"] = {"metric": name, "source": f"at_threshold.{field}", "value": at[field]}
+    else:  # no val threshold reached the target: only the in-sample number exists
+        scored["headline"] = {
+            "metric": name, "source": "objective_oracle_threshold", "value": scored["objective_oracle_threshold"],
+            "note": "no threshold on val met the constraint; this value uses a threshold fitted on test",
+        }
+
+
+def _mark_promoted(exp_dir: Path) -> None:
+    with ex.state_lock(exp_dir):
+        state = ex.load(exp_dir)[2]
+        state.promoted, state.promote_pending = True, None
+        ex.save_state(exp_dir, state)
+
+
 def _score_test(exp_dir: Path, req: dict, ctx) -> dict:
-    """The single read and scoring of the test split; marks the experiment promoted right after."""
+    """The single read and scoring of the test split.
+
+    test_metrics.json is written before `state.promoted` is set: a crash in between leaves the
+    file, which a resumed finish (and any new promote request) treats as the test being used.
+    """
     from finetune_kit.train import worker
     from finetune_kit.train.loop import _predict, pick_device
 
@@ -288,20 +356,24 @@ def _score_test(exp_dir: Path, req: dict, ctx) -> dict:
     }
     if ctx.threshold is not None:
         scored["at_threshold"] = at_threshold(truth, out, ctx.pos, ctx.threshold["threshold"])
-    with ex.state_lock(exp_dir):  # the test is consumed now, whatever happens next
-        state = ex.load(exp_dir)[2]
-        state.promoted, state.promote_pending = True, None
-        ex.save_state(exp_dir, state)
+    _label_test(exp_dir, ctx, scored)
     ctx.final.mkdir(exist_ok=True)
     store.write_json(ctx.final / "test_metrics.json", scored)
+    _mark_promoted(exp_dir)  # the test is consumed now, whatever happens next
     return scored
 
 
-def _resumed_test_metrics(req: dict, ctx) -> dict:
+def _previous_test_metrics(exp_dir: Path, req: dict, ctx) -> dict | None:
+    """test_metrics.json of this run if the test was already scored (resume), else None."""
     p = ctx.final / "test_metrics.json"
+    promoted = ex.load(exp_dir)[2].promoted
     if not p.is_file():
-        raise RuntimeError("experiment is promoted but final/test_metrics.json is missing; the test is not rescored")
+        if promoted:
+            raise RuntimeError("experiment is promoted but final/test_metrics.json is missing; the test is not rescored")
+        return None
     scored = json.loads(p.read_text())
+    if not promoted:
+        _mark_promoted(exp_dir)  # scored before a crash/failure that skipped the state update
     if scored.get("promote_run") != req["run_id"]:
         raise ValueError(f"already promoted by {scored.get('promote_run')}; test is scored once")
     return scored
@@ -385,7 +457,8 @@ def finish(exp_dir: Path, req: dict) -> dict:
     """Finalise a promote run (called by the worker; idempotent). Returns the promote payload.
 
     Any failure before the test is scored leaves `promoted` False (test unused). Once scored,
-    `promoted` stays True even if exporting fails; a resumed finish never rescores the test.
+    `promoted` stays True even if exporting fails; a resumed finish never rescores the test
+    (an existing final/test_metrics.json of this run counts as scored).
     """
     exp_dir = Path(exp_dir)
     out: dict = {"source_run": req.get("source_run")}
@@ -394,10 +467,7 @@ def finish(exp_dir: Path, req: dict) -> dict:
             raise RuntimeError(f"promote training ended with status {req['status']}: {req.get('error', 'see seed logs')}")
         ctx = _context(exp_dir, req)
         out.update(seed=ctx.seed, threshold=ctx.threshold)
-        if ex.load(exp_dir)[2].promoted:
-            out["test_metrics"] = _resumed_test_metrics(req, ctx)
-        else:
-            out["test_metrics"] = _score_test(exp_dir, req, ctx)
+        out["test_metrics"] = _previous_test_metrics(exp_dir, req, ctx) or _score_test(exp_dir, req, ctx)
         out["final"] = str(ctx.final)
     except Exception as e:
         _clear_pending(exp_dir, req["run_id"])
