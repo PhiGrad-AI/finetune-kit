@@ -313,3 +313,171 @@ def pin_revision(spec: str, revision: str | None) -> str:
     """Commit sha for `spec` at `revision` (branch, tag, sha or None for the default branch)."""
     repo_id, config = parse_hf(spec)
     return _resolve_revision(repo_id, revision, config)
+
+
+# ---- inspect-data: describe a dataset without showing any row text ----
+
+_MAX_LABELS = 50
+_SHOWN_LABELS = 20
+_LABEL_NAMES = ("label", "labels", "class", "target")
+
+
+def _value_type(v) -> str:
+    if isinstance(v, bool):  # before int: bool is an int subclass
+        return "bool"
+    if isinstance(v, str):
+        return "string"
+    if isinstance(v, int):
+        return "int"
+    if isinstance(v, float):
+        return "float"
+    if isinstance(v, list) and v:
+        inner = {_value_type(x) for x in v}
+        if inner == {"string"}:
+            return "list[string]"
+        if inner == {"int"}:
+            return "list[int]"
+    return "other"
+
+
+def _local_column_type(values: list) -> str:
+    kinds = {_value_type(v) for v in values if v is not None}
+    if len(kinds) == 1:
+        return kinds.pop()
+    return "float" if kinds == {"int", "float"} else "other"
+
+
+def _feature_type(feature) -> str:
+    import datasets
+
+    if isinstance(feature, datasets.ClassLabel):
+        return "classlabel"
+    if isinstance(feature, datasets.Value):
+        dtype = feature.dtype
+        if dtype in ("string", "large_string"):
+            return "string"
+        if dtype.startswith(("int", "uint")):
+            return "int"
+        if dtype.startswith("float"):
+            return "float"
+        if dtype == "bool":
+            return "bool"
+        return "other"
+    inner = feature[0] if isinstance(feature, list) and feature else getattr(feature, "feature", None)
+    if inner is not None:
+        kind = _feature_type(inner)
+        if kind in ("string", "int", "classlabel"):
+            return f"list[{kind}]"
+    return "other"
+
+
+def _label_counts(rows: list[dict], col: str, names: list[str] | None) -> tuple[int, dict]:
+    """(n_distinct, top values by count) for a column, or (n, {}) when it has too many values."""
+    counts: dict = {}
+    for r in rows:
+        v = r.get(col)
+        if v is None:
+            continue
+        v = _names(v, names) if names else v
+        key = v if isinstance(v, str) else str(v)
+        counts[key] = counts.get(key, 0) + 1
+        if len(counts) > _MAX_LABELS:
+            return len(counts), {}
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:_SHOWN_LABELS]
+    return len(counts), dict(top)
+
+
+def _text_column(rows: list[dict], columns: dict[str, str]) -> str | None:
+    """The string column with the longest mean length."""
+    def mean_len(col):
+        lens = [len(r[col]) for r in rows if isinstance(r.get(col), str)]
+        return sum(lens) / len(lens) if lens else 0
+
+    strings = [c for c, t in columns.items() if t == "string"]
+    return max(strings, key=mean_len) if strings else None
+
+
+def _suggest(text: str | None, columns: dict[str, str], candidates: dict) -> tuple[dict, list[str]]:
+    suggested: dict[str, str] = {}
+    lists = [c for c, t in columns.items() if t == "list[string]"]
+    tag_cols = [c for c, t in columns.items() if t in ("list[classlabel]", "list[string]")]
+    tasks = []
+    if text:
+        suggested["text"] = text
+        if candidates:
+            named = [c for c in candidates if c.lower() in _LABEL_NAMES]
+            suggested["label"] = named[0] if named else min(candidates, key=lambda c: candidates[c]["n_distinct"])
+            tasks.append("seq-cls")
+    if lists:
+        tokens = lists[0]
+        suggested["tokens"] = tokens
+        tags = [c for c in tag_cols if c != tokens]
+        if tags:
+            suggested["tags"] = tags[0]
+            tasks.append("token-cls")
+    return suggested, tasks
+
+
+def inspect(
+    source: str | None, train: str | None, val: str | None, test: str | None, root: Path,
+    revision: str | None = None,
+) -> dict:
+    """Describe a dataset's splits, columns, label counts and a suggested column mapping, never its text."""
+    from finetune_kit.experiment import check_data_choice
+
+    check_data_choice(train, source, val, test)
+    if revision is not None and not source:
+        raise ValueError("--revision only applies with --source")
+    splits: dict[str, dict] = {}
+    names_by_col: dict[str, list[str]] = {}
+    if source:
+        repo_id, config = parse_hf(source)
+        sha = _resolve_revision(repo_id, revision, config)
+        raw = _load_dataset(repo_id, config, sha)
+        picked = pick_splits(list(raw))
+        role_of = {name: role for role, name in picked.items()}
+        for name, (rows, _) in raw.items():
+            splits[name] = {"n_rows": len(rows), "role": role_of.get(name)}
+        train_rows, features = raw[picked["train"]]
+        columns = {c: _feature_type(f) for c, f in features.items()}
+        for c, f in features.items():
+            names = _class_names(f)
+            if names is not None:
+                names_by_col[c] = names
+        shown_source = source
+    else:
+        sha = None
+        train_rows = read_table(_local_path(root, train))
+        splits["train"] = {"n_rows": len(train_rows), "role": "train"}
+        for role, p in (("val", val), ("test", test)):
+            if p:
+                splits[role] = {"n_rows": len(read_table(_local_path(root, p))), "role": role}
+        cols: dict[str, list] = {}
+        for r in train_rows:
+            for c in r:
+                cols.setdefault(c, [])
+        for c, vals in cols.items():
+            vals.extend(r.get(c) for r in train_rows)
+        columns = {c: _local_column_type(v) for c, v in cols.items()}
+        shown_source = train
+    text = _text_column(train_rows, columns)
+    candidates = {}
+    for c, t in columns.items():
+        if c == text:
+            continue  # the text column is never shown, however few distinct values it has
+        if t in ("int", "bool", "classlabel", "string"):
+            n, values = _label_counts(train_rows, c, names_by_col.get(c))
+            # A string column whose values mostly differ per row is text, not labels: never print it.
+            text_like = t == "string" and n * 2 > sum(r.get(c) is not None for r in train_rows)
+            if n <= _MAX_LABELS and not text_like:
+                candidates[c] = {"n_distinct": n, "values": values}
+    suggested, tasks = _suggest(text, columns, candidates)
+    return {
+        "source": shown_source,
+        "revision": sha,
+        "splits": splits,
+        "columns": columns,
+        "label_candidates": candidates,
+        "suggested_columns": suggested,
+        "tasks_possible": tasks,
+    }

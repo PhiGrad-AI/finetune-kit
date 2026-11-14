@@ -455,6 +455,21 @@ def check_data(
     emit(report)
 
 
+@app.command("inspect-data")
+def inspect_data(
+    source: Optional[str] = typer.Option(None, "--source", help="Hugging Face dataset: hf:<id>[:<config>]."),
+    revision: Optional[str] = typer.Option(None, "--revision", help="Branch, tag or sha for --source."),
+    train: Optional[str] = typer.Option(None, "--train", help="Train JSONL, CSV, TSV or Parquet."),
+    val: Optional[str] = typer.Option(None, "--val", help="Val file."),
+    test: Optional[str] = typer.Option(None, "--test", help="Test file."),
+) -> None:
+    """Describe a dataset (splits, columns, label counts, suggested mapping) without printing its text."""
+    from finetune_kit import sources
+
+    with _errors():
+        emit(sources.inspect(source, train, val, test, Path.cwd(), revision))
+
+
 @app.command()
 def catalog(exp: str = typer.Argument(..., help="Experiment: number, name or path.")) -> None:
     """List tunable hyperparameters with recommendations for this experiment's data."""

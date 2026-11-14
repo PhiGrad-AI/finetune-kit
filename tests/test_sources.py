@@ -1,5 +1,7 @@
 import json
+from pathlib import Path
 
+import datasets
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -118,21 +120,11 @@ def test_normalize_identity_drops_extras():
 
 # ---- Hugging Face loading and split resolution ----
 
-import datasets  # noqa: E402
-
 _CL = datasets.ClassLabel(names=["benign", "injection"])
 
 
 def _seq_rows(n, label=lambda i: i % 2):
     return [{"text": f"t{i}", "label": label(i), "extra": i} for i in range(n)]
-
-
-def _fake(monkeypatch, splits, features=None):
-    feats = features if features is not None else {"label": _CL}
-    monkeypatch.setattr(sources, "_resolve_revision", lambda repo, rev, cfg=None: "abc123")
-    monkeypatch.setattr(
-        sources, "_load_dataset", lambda repo, cfg, rev: {k: (v, feats) for k, v in splits.items()}
-    )
 
 
 def test_parse_hf():
@@ -150,8 +142,8 @@ def test_pick_splits_aliases():
         sources.pick_splits(["foo"])
 
 
-def test_classlabel_names_applied(monkeypatch):
-    _fake(monkeypatch, {"train": _seq_rows(4)})
+def test_classlabel_names_applied(hf_fake):
+    hf_fake({"train": _seq_rows(4)})
     loaded = sources.load_hf("hf:x/y", "abc123", "seq-cls", {})
     assert [r["label"] for r in loaded.train] == ["benign", "injection", "benign", "injection"]
     assert "extra" not in loaded.train[0]
@@ -164,16 +156,16 @@ def test_token_cls_names():
     assert sources.label_names({"label": datasets.Value("string")}, {}, "seq-cls") == {}
 
 
-def test_all_published_used_as_is(monkeypatch):
-    _fake(monkeypatch, {"train": _seq_rows(8), "validation": _seq_rows(2), "test": _seq_rows(2)})
+def test_all_published_used_as_is(hf_fake):
+    hf_fake({"train": _seq_rows(8), "validation": _seq_rows(2), "test": _seq_rows(2)})
     loaded = sources.load_hf("hf:x/y", "abc123", "seq-cls", {})
     tr, va, te, origin = sources.resolve_splits(loaded, "seq-cls", 0.1)
     assert (len(tr), len(va), len(te)) == (8, 2, 2)
     assert origin == {"train": "published", "val": "published", "test": "published"}
 
 
-def test_unlabelled_test_carved(monkeypatch):
-    _fake(monkeypatch, {"train": _seq_rows(40), "validation": _seq_rows(4), "test": _seq_rows(4, lambda i: -1)})
+def test_unlabelled_test_carved(hf_fake):
+    hf_fake({"train": _seq_rows(40), "validation": _seq_rows(4), "test": _seq_rows(4, lambda i: -1)})
     loaded = sources.load_hf("hf:x/y", "abc123", "seq-cls", {})
     assert loaded.test_unlabelled
     tr, va, te, origin = sources.resolve_splits(loaded, "seq-cls", 0.1)
@@ -182,8 +174,8 @@ def test_unlabelled_test_carved(monkeypatch):
     assert len(te) == 4 and len(tr) == 36 and all(r["label"] in ("benign", "injection") for r in te)
 
 
-def test_missing_val_carved(monkeypatch):
-    _fake(monkeypatch, {"train": _seq_rows(40), "test": _seq_rows(6)})
+def test_missing_val_carved(hf_fake):
+    hf_fake({"train": _seq_rows(40), "test": _seq_rows(6)})
     tr, va, te, origin = sources.resolve_splits(
         sources.load_hf("hf:x/y", "abc123", "seq-cls", {}), "seq-cls", 0.1
     )
@@ -191,8 +183,8 @@ def test_missing_val_carved(monkeypatch):
     assert len(va) == 4 and len(tr) == 36 and len(te) == 6
 
 
-def test_only_train_carved(monkeypatch):
-    _fake(monkeypatch, {"train": _seq_rows(100)})
+def test_only_train_carved(hf_fake):
+    hf_fake({"train": _seq_rows(100)})
     tr, va, te, origin = sources.resolve_splits(
         sources.load_hf("hf:x/y", "abc123", "seq-cls", {}), "seq-cls", 0.1
     )
@@ -201,8 +193,8 @@ def test_only_train_carved(monkeypatch):
     assert origin["test"] == "carved from train (no published test split)"
 
 
-def test_generated_ids_unique_across_splits(monkeypatch):
-    _fake(monkeypatch, {"train": _seq_rows(8), "validation": _seq_rows(2), "test": _seq_rows(2)})
+def test_generated_ids_unique_across_splits(hf_fake):
+    hf_fake({"train": _seq_rows(8), "validation": _seq_rows(2), "test": _seq_rows(2)})
     tr, va, te, _ = sources.resolve_splits(
         sources.load_hf("hf:x/y", "abc123", "seq-cls", {}), "seq-cls", 0.1
     )
@@ -210,8 +202,8 @@ def test_generated_ids_unique_across_splits(monkeypatch):
     assert len(ids) == len(set(ids)) == 12
 
 
-def test_ignored_splits_reported(monkeypatch):
-    _fake(monkeypatch, {"train": _seq_rows(4), "unsupervised": _seq_rows(3)})
+def test_ignored_splits_reported(hf_fake):
+    hf_fake({"train": _seq_rows(4), "unsupervised": _seq_rows(3)})
     assert sources.load_hf("hf:x/y", "abc123", "seq-cls", {}).ignored_splits == ["unsupervised"]
 
 
@@ -225,8 +217,8 @@ def test_library_error_is_one_line_value_error(monkeypatch):
     assert str(e.value) == "could not load hf:x/y:cfg: Dataset 'x/y' doesn't exist"
 
 
-def test_empty_published_val_and_test_count_as_missing(monkeypatch):
-    _fake(monkeypatch, {"train": _seq_rows(100), "validation": [], "test": []})
+def test_empty_published_val_and_test_count_as_missing(hf_fake):
+    hf_fake({"train": _seq_rows(100), "validation": [], "test": []})
     tr, va, te, origin = sources.resolve_splits(
         sources.load_hf("hf:x/y", "abc123", "seq-cls", {}), "seq-cls", 0.1
     )
@@ -235,16 +227,16 @@ def test_empty_published_val_and_test_count_as_missing(monkeypatch):
     assert origin["test"] == "carved from train (no published test split)"
 
 
-def test_validation_errors_name_the_dataset(monkeypatch):
+def test_validation_errors_name_the_dataset(hf_fake):
     rows = _seq_rows(8)
     rows[0]["text"] = " "
-    _fake(monkeypatch, {"train": rows, "validation": _seq_rows(2), "test": _seq_rows(2)})
+    hf_fake({"train": rows, "validation": _seq_rows(2), "test": _seq_rows(2)})
     loaded = sources.load_hf("hf:x/y:cfg", "abc123", "seq-cls", {})
     with pytest.raises(ValueError, match="hf:x/y:cfg train"):
         sources.resolve_splits(loaded, "seq-cls", 0.1)
 
 
-def test_token_cls_classlabel_tags_end_to_end(monkeypatch):
+def test_token_cls_classlabel_tags_end_to_end(hf_fake):
     names = ["O", "B-PER", "I-PER"]
     feats = {"tokens": datasets.Sequence(datasets.Value("string")),
              "tags": datasets.Sequence(datasets.ClassLabel(names=names))}
@@ -252,7 +244,7 @@ def test_token_cls_classlabel_tags_end_to_end(monkeypatch):
     def rows(n):
         return [{"tokens": ["a", "b", "c"], "tags": [0, 1, 2]} for _ in range(n)]
 
-    _fake(monkeypatch, {"train": rows(8), "validation": rows(2), "test": rows(2)}, features=feats)
+    hf_fake({"train": rows(8), "validation": rows(2), "test": rows(2)}, features=feats)
     loaded = sources.load_hf("hf:x/y", "abc123", "token-cls", {})
     tr, va, te, origin = sources.resolve_splits(loaded, "token-cls", 0.1)
     assert tr[0]["tags"] == ["O", "B-PER", "I-PER"]
@@ -279,3 +271,75 @@ def test_load_source_local_origins(tmp_path):
     tr, va, te, origin = sources.load_source(DataPaths(train="d.jsonl"), tmp_path, "seq-cls", 0.1)
     assert origin == {"train": "provided", "val": "carved from train", "test": "carved from train"}
     assert len(tr) + len(va) + len(te) == 40
+
+
+# ---- inspect ----
+
+
+def test_inspect_csv_suggests_mapping(tmp_path):
+    (tmp_path / "t.csv").write_text(
+        "prompt,is_injection\n" + "".join(f"prompt number {i},{i % 2}\n" for i in range(6)), encoding="utf-8"
+    )
+    r = sources.inspect(None, "t.csv", None, None, tmp_path)
+    assert r["source"] == "t.csv" and r["revision"] is None
+    assert r["splits"] == {"train": {"n_rows": 6, "role": "train"}}
+    assert r["columns"] == {"prompt": "string", "is_injection": "string"}
+    assert list(r["label_candidates"]) == ["is_injection"]  # unique prompts are not label values
+    assert r["label_candidates"]["is_injection"] == {"n_distinct": 2, "values": {"0": 3, "1": 3}}
+    assert r["suggested_columns"] == {"text": "prompt", "label": "is_injection"}
+    assert r["tasks_possible"] == ["seq-cls"]
+
+
+def test_inspect_hf_shows_classlabel_names(hf_fake):
+    rows = [{"text": f"t{i}", "label": 1 if i < 3 else 0} for i in range(10)]
+    feats = {"text": datasets.Value("string"), "label": _CL}
+    hf_fake({"train": rows, "dev": rows[:2], "extra": rows[:1]}, features=feats)
+    r = sources.inspect("hf:x/y", None, None, None, Path("."), revision="main")
+    assert r["source"] == "hf:x/y" and r["revision"] == "abc123"
+    assert r["splits"] == {
+        "train": {"n_rows": 10, "role": "train"},
+        "dev": {"n_rows": 2, "role": "val"},
+        "extra": {"n_rows": 1, "role": None},
+    }
+    assert r["columns"] == {"text": "string", "label": "classlabel"}
+    assert r["label_candidates"]["label"] == {"n_distinct": 2, "values": {"benign": 7, "injection": 3}}
+    assert r["suggested_columns"] == {"text": "text", "label": "label"}
+
+
+def test_inspect_never_prints_text(tmp_path):
+    secret = "SENTINEL-zq81-secret"
+    rows = [{"text": f"{secret} {i % 3}", "label": i % 2, "n": i} for i in range(6)]  # repeated texts too
+    (tmp_path / "t.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    out = json.dumps(sources.inspect(None, "t.jsonl", None, None, tmp_path))
+    assert secret not in out
+
+
+def test_inspect_token_cls_and_label_limits(hf_fake):
+    names = ["O", "B-PER"]
+    feats = {"tokens": datasets.Sequence(datasets.Value("string")),
+             "tags": datasets.Sequence(datasets.ClassLabel(names=names)),
+             "id": datasets.Value("int64")}
+    rows = [{"tokens": ["a", "b"], "tags": [0, 1], "id": i} for i in range(60)]
+    hf_fake({"train": rows}, features=feats)
+    r = sources.inspect("hf:x/y", None, None, None, Path("."))
+    assert r["columns"] == {"tokens": "list[string]", "tags": "list[classlabel]", "id": "int"}
+    assert "id" not in r["label_candidates"]  # 60 distinct > 50
+    assert r["suggested_columns"] == {"tokens": "tokens", "tags": "tags"}
+    assert r["tasks_possible"] == ["token-cls"]
+
+
+def test_inspect_values_capped_at_20_and_types(tmp_path):
+    rows = [{"text": "x", "label": i % 30, "flag": True, "f": 1.5, "o": {"a": 1}} for i in range(60)]
+    (tmp_path / "t.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    r = sources.inspect(None, "t.jsonl", None, None, tmp_path)
+    assert r["columns"] == {"text": "string", "label": "int", "flag": "bool", "f": "float", "o": "other"}
+    assert r["label_candidates"]["label"]["n_distinct"] == 30
+    assert len(r["label_candidates"]["label"]["values"]) == 20
+    assert r["suggested_columns"]["label"] == "label"
+
+
+def test_inspect_choice_errors(tmp_path):
+    with pytest.raises(ValueError, match="give --train or --source, not both"):
+        sources.inspect("hf:x/y", "a.csv", None, None, tmp_path)
+    with pytest.raises(ValueError, match="give --train or --source"):
+        sources.inspect(None, None, None, None, tmp_path)
