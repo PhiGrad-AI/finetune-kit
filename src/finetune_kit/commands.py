@@ -103,8 +103,12 @@ def setup_experiment(
     data_cfg = ex.DataPaths(
         train=train, val=val, test=test, source=source, revision=pinned, columns=cols
     )
+    # Load every split the way check-data will, so mapping and row errors surface before anything is written.
+    got = sources.resolve_source(data_cfg, root, task, 0.1)
     if task == "seq-cls":
-        labels = data.label_map(sources.load_train(data_cfg, root, task), task)
+        data.check_label_column(got.train + got.val + got.test)
+        train_rows = got.train if source else sources.load_train(data_cfg, root, task)
+        labels = data.label_map(train_rows, task)
         if positive_class is not None and positive_class not in labels:
             raise ValueError(f"--positive-class {positive_class!r} is not a train label {labels}")
         if positive_class is None and len(labels) > 2 and any(m.needs_positive for m in resolved):
@@ -184,6 +188,8 @@ def check_data(exp_dir: Path, *, resplit: bool = False, val_frac: float = 0.1) -
     task = cfg.task
     got = sources.resolve_source(cfg.data, root, task, val_frac)
     train, val, test, split_origin = got.train, got.val, got.test, got.origin
+    if task == "seq-cls":
+        data.check_label_column(train + val + test)
     profile = store.profile_for(cfg, {}, root)
     report = data.check(
         exp_dir, task, profile.max_len, load_tokenizer(profile),

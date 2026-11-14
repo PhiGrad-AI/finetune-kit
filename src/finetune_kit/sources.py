@@ -86,8 +86,13 @@ def normalize(
     available: set[str] = set()
     for r in raw:
         available.update(k for k in r if isinstance(k, str))
+    nulls = [f for f, col in columns.items() if col is None]
+    if any(f != "id" for f in nulls):
+        raise ValueError(f"--columns: only id may be null (generated ids); got null for {sorted(nulls)}")
     # Standard-named columns not remapped keep their name; other unmapped columns are dropped.
-    mapping = {f: f for f in _STANDARD if f in available and f not in columns} | dict(columns)
+    # {"id": null} ignores any id column so ids are generated.
+    mapping = {f: f for f in _STANDARD if f in available and f not in columns}
+    mapping |= {f: col for f, col in columns.items() if col is not None}
     for col in mapping.values():
         if col not in available and raw:
             raise ValueError(f"{where}: no column {col!r}; columns are {sorted(available)}")
@@ -100,7 +105,12 @@ def normalize(
             if col in label_names:
                 value = _names(value, label_names[col])
             row[field] = value
-        row_id = str(row.pop("id")) if "id" in row else f"{role}-{n:06d}"
+        if "id" in row:
+            if row["id"] is None or row["id"] == "":
+                raise ValueError(f"{where} row {n}: id is empty")
+            row_id = str(row.pop("id"))
+        else:
+            row_id = f"{role}-{n:06d}"
         rows.append({"id": row_id, **row})
     return rows
 
@@ -496,7 +506,8 @@ def inspect(
         cols: dict[str, list] = {}
         for r in train_rows:
             for c in r:
-                cols.setdefault(c, [])
+                if isinstance(c, str):  # a ragged CSV row puts extra fields under key None
+                    cols.setdefault(c, [])
         for c, vals in cols.items():
             vals.extend(r.get(c) for r in train_rows)
         columns = {c: _local_column_type(v) for c, v in cols.items()}

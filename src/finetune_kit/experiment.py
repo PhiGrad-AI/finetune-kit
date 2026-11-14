@@ -37,7 +37,7 @@ class DataPaths(BaseModel):
     test: str | None = None
     source: str | None = None
     revision: str | None = None
-    columns: dict[str, str] = {}
+    columns: dict[str, str | None] = {}  # {"id": null} means generate ids
 
     @model_validator(mode="after")
     def _one_source(self):

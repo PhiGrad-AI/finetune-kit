@@ -67,8 +67,7 @@ experiment. Then ask, in this order:
    test splits are used as they are, and that a validation or test split that is missing,
    empty or unlabelled is carved out of train instead. Private or gated datasets use the user's
    existing Hugging Face login (`hf auth login` or `huggingface-cli login`); never ask for a
-   token. You may check that files exist (`ls`) and count rows (`wc -l <file>`), but do not open
-   them.
+   token. You may check that files exist (`ls`), but do not open them.
 
    Then run `finetune-kit inspect-data` with the same data. The tool looks at the data so you
    do not have to; it prints only counts, column names and label values, never row text:

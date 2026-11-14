@@ -47,6 +47,8 @@ def validate_rows(
             for tag in row["tags"]:
                 if not isinstance(tag, str) or not _TAG_RE.match(tag):
                     raise DataError(f"{here}: invalid BIO/BIOES tag {tag!r}")
+        if row["id"] is None or row["id"] == "":
+            raise DataError(f"{here}: id is empty")
         if row["id"] in seen:
             raise DataError(f"{here}: duplicate id {row['id']!r}")
         seen.add(row["id"])
@@ -69,6 +71,20 @@ def load_rows(path: Path, task: str, columns: dict | None = None, role: str = "t
         return validate_rows(rows, task, path.name, lines)
     raw = sources.read_table(path)
     return validate_rows(sources.normalize(raw, task, columns, role, path.name), task, path.name)
+
+
+_MAX_LABEL_VALUES = 200
+_MAX_LABEL_CHARS = 40
+
+
+def check_label_column(rows: list[dict]) -> None:
+    """Refuse a seq-cls label column that looks like text. The message gives a count, never a value."""
+    values = {str(r["label"]) for r in rows}
+    if len(values) > _MAX_LABEL_VALUES or any(len(v) > _MAX_LABEL_CHARS for v in values):
+        raise DataError(
+            f"label column has {len(values)} distinct values (or values longer than {_MAX_LABEL_CHARS} "
+            "characters); is --columns mapping the text column as the label?"
+        )
 
 
 def label_map(train_rows: list[dict], task: str) -> list[str]:
