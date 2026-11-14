@@ -7,6 +7,13 @@ def kit_home() -> Path:
     return Path(env) if env else Path.home() / ".finetune-kit"
 
 
+def test_env(name: str) -> str | None:
+    """A test-only env var, honoured only when FINETUNE_KIT_TESTING=1 is also set."""
+    if os.environ.get("FINETUNE_KIT_TESTING") != "1":
+        return None
+    return os.environ.get(name)
+
+
 def vault_dir(uid: str) -> Path:
     return kit_home() / "vault" / uid
 

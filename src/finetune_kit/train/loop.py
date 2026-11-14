@@ -13,6 +13,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from finetune_kit.paths import test_env
 from finetune_kit.train.config import TrainConfig
 from finetune_kit.train.losses import class_weights, seq_loss, token_loss
 from finetune_kit.train.models import (
@@ -262,7 +263,7 @@ def train_and_predict(
     oversample = 1 if token else cfg.oversample
     epoch_len = _epoch_len(data.train_y, oversample) if not token else n_train
     steps = cfg.max_steps or round(cfg.epochs * epoch_len / batch * cfg.step_fraction)
-    cap = os.environ.get("FINETUNE_KIT_MAX_STEPS")
+    cap = test_env("FINETUNE_KIT_MAX_STEPS")
     if cap:
         steps = min(steps, int(cap))
     steps = max(1, steps)

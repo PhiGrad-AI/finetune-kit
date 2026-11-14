@@ -167,6 +167,13 @@ def append_result(exp_dir: Path, row: dict) -> None:
         f.write("\n".join(lines) + "\n")
 
 
+def result_run_ids(exp_dir: Path) -> set[str]:
+    p = Path(exp_dir) / "results.tsv"
+    if not p.is_file():
+        return set()
+    return {line.split("\t", 1)[0] for line in p.read_text().splitlines()[1:] if line}
+
+
 def current_versions(profile: ModelProfile) -> dict[str, str]:
     out = {"finetune-kit": finetune_kit.__version__, "model_revision": profile.revision}
     for pkg in ("torch", "transformers"):

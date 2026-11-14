@@ -13,6 +13,7 @@ import numpy as np
 from finetune_kit import metrics
 from finetune_kit.data import label_map, load_rows, subset
 from finetune_kit.experiment import ExperimentConfig, MetricRef, load
+from finetune_kit.paths import test_env
 from finetune_kit.profiles import load_profiles
 from finetune_kit.train.config import build_config
 
@@ -144,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         (seed_dir / stale).unlink(missing_ok=True)
     try:
         request = json.loads((run_dir / "request.json").read_text())
-        if os.environ.get("FINETUNE_KIT_FAKE_TRAIN") == "1":
+        if test_env("FINETUNE_KIT_FAKE_TRAIN") == "1":
             _fake(request, a.seed, seed_dir)
         else:
             _real(a.exp, request, a.seed, seed_dir)
