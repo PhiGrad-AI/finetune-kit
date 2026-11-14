@@ -129,7 +129,7 @@ def _seq_rows(n, label=lambda i: i % 2):
 
 def _fake(monkeypatch, splits, features=None):
     feats = features if features is not None else {"label": _CL}
-    monkeypatch.setattr(sources, "_resolve_revision", lambda repo, rev: "abc123")
+    monkeypatch.setattr(sources, "_resolve_revision", lambda repo, rev, cfg=None: "abc123")
     monkeypatch.setattr(
         sources, "_load_dataset", lambda repo, cfg, rev: {k: (v, feats) for k, v in splits.items()}
     )
@@ -197,7 +197,8 @@ def test_only_train_carved(monkeypatch):
         sources.load_hf("hf:x/y", "abc123", "seq-cls", {}), "seq-cls", 0.1
     )
     assert len(tr) + len(va) + len(te) == 100 and va and te
-    assert origin["val"] == "carved from train" and origin["test"] == "carved from train"
+    assert origin["val"] == "carved from train"
+    assert origin["test"] == "carved from train (no published test split)"
 
 
 def test_generated_ids_unique_across_splits(monkeypatch):
@@ -222,3 +223,59 @@ def test_library_error_is_one_line_value_error(monkeypatch):
     with pytest.raises(ValueError) as e:
         sources._load_dataset("x/y", "cfg", "abc")
     assert str(e.value) == "could not load hf:x/y:cfg: Dataset 'x/y' doesn't exist"
+
+
+def test_empty_published_val_and_test_count_as_missing(monkeypatch):
+    _fake(monkeypatch, {"train": _seq_rows(100), "validation": [], "test": []})
+    tr, va, te, origin = sources.resolve_splits(
+        sources.load_hf("hf:x/y", "abc123", "seq-cls", {}), "seq-cls", 0.1
+    )
+    assert va and te and len(tr) + len(va) + len(te) == 100
+    assert origin["val"] == "carved from train"
+    assert origin["test"] == "carved from train (no published test split)"
+
+
+def test_validation_errors_name_the_dataset(monkeypatch):
+    rows = _seq_rows(8)
+    rows[0]["text"] = " "
+    _fake(monkeypatch, {"train": rows, "validation": _seq_rows(2), "test": _seq_rows(2)})
+    loaded = sources.load_hf("hf:x/y:cfg", "abc123", "seq-cls", {})
+    with pytest.raises(ValueError, match="hf:x/y:cfg train"):
+        sources.resolve_splits(loaded, "seq-cls", 0.1)
+
+
+def test_token_cls_classlabel_tags_end_to_end(monkeypatch):
+    names = ["O", "B-PER", "I-PER"]
+    feats = {"tokens": datasets.Sequence(datasets.Value("string")),
+             "tags": datasets.Sequence(datasets.ClassLabel(names=names))}
+
+    def rows(n):
+        return [{"tokens": ["a", "b", "c"], "tags": [0, 1, 2]} for _ in range(n)]
+
+    _fake(monkeypatch, {"train": rows(8), "validation": rows(2), "test": rows(2)}, features=feats)
+    loaded = sources.load_hf("hf:x/y", "abc123", "token-cls", {})
+    tr, va, te, origin = sources.resolve_splits(loaded, "token-cls", 0.1)
+    assert tr[0]["tags"] == ["O", "B-PER", "I-PER"]
+    assert data.label_map(tr, "token-cls") == ["B-PER", "I-PER", "O"]
+
+
+def test_resolve_revision_falsy_sha_and_config_in_error(monkeypatch):
+    import huggingface_hub
+
+    class Api:
+        def dataset_info(self, repo, revision=None):
+            return type("I", (), {"sha": None})()
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    with pytest.raises(ValueError, match="could not resolve a revision for hf:x/y:cfg"):
+        sources._resolve_revision("x/y", None, "cfg")
+
+
+def test_load_source_local_origins(tmp_path):
+    from finetune_kit.experiment import DataPaths
+
+    rows = [{"id": f"s{i}", "text": f"t{i}", "label": str(i % 2)} for i in range(40)]
+    (tmp_path / "d.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    tr, va, te, origin = sources.load_source(DataPaths(train="d.jsonl"), tmp_path, "seq-cls", 0.1)
+    assert origin == {"train": "provided", "val": "carved from train", "test": "carved from train"}
+    assert len(tr) + len(va) + len(te) == 40

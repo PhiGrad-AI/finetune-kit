@@ -399,3 +399,137 @@ def test_new_bad_column_writes_nothing(runner, tmp_path):
     assert r.exit_code == 2
     assert "no column 'promt'" in _out(r)["error"]
     assert not list((tmp_path / "experiments").glob("001-*"))
+
+
+# ---- Hugging Face sources ----
+
+import datasets  # noqa: E402
+
+from finetune_kit import sources  # noqa: E402
+
+
+def _hf_fake(monkeypatch, splits, sha="abc123"):
+    feats = {"label": datasets.ClassLabel(names=["benign", "injection"])}
+    monkeypatch.setattr(sources, "_resolve_revision", lambda repo, rev, cfg=None: sha)
+    monkeypatch.setattr(sources, "_load_dataset", lambda repo, cfg, rev: {k: (v, feats) for k, v in splits.items()})
+
+
+def _hf_rows(n, tag):
+    return [{"text": f"{tag} word{i} text", "label": i % 2} for i in range(n)]
+
+
+def _hf_new(runner, *extra, name="hf"):
+    return runner.invoke(app, [
+        "new", name, "--task", "seq-cls", "--model", "tiny-bert", "--source", "hf:x/y",
+        "--metric", "macro_f1", *extra,
+    ])
+
+
+def _hf_published(monkeypatch):
+    _hf_fake(monkeypatch, {"train": _hf_rows(40, "tr"), "validation": _hf_rows(8, "va"), "test": _hf_rows(6, "te")})
+
+
+def test_new_from_hf_pins_revision(runner, tmp_path, monkeypatch):
+    _hf_published(monkeypatch)
+    r = _hf_new(runner, "--revision", "main")
+    assert r.exit_code == 0, r.stdout
+    cfg, _, _ = ex.load(_exp_dir(tmp_path))
+    assert cfg.data.source == "hf:x/y" and cfg.data.revision == "abc123" and cfg.data.train is None
+
+
+def test_check_data_from_hf_freezes_published_splits(runner, tmp_path, monkeypatch):
+    _hf_published(monkeypatch)
+    assert _hf_new(runner).exit_code == 0
+    r = runner.invoke(app, ["check-data", "001"])
+    assert r.exit_code == 0, r.stdout
+    report, d = _out(r), _exp_dir(tmp_path)
+    cfg, _, _ = ex.load(d)
+    assert len((d / "splits" / "train.jsonl").read_text().splitlines()) == 40
+    assert len((vault_dir(cfg.uid) / "test.jsonl").read_text().splitlines()) == 6
+    assert report["split_origin"] == {"train": "published", "val": "published", "test": "published"}
+    assert report["ignored_splits"] == []
+    assert not any("carved" in w for w in report["warnings"])
+
+
+def test_check_data_from_hf_carved_warnings_and_ignored(runner, tmp_path, monkeypatch):
+    _hf_fake(monkeypatch, {"train": _hf_rows(100, "tr"), "unsupervised": _hf_rows(3, "un")})
+    assert _hf_new(runner).exit_code == 0
+    report = _out(runner.invoke(app, ["check-data", "001"]))
+    assert report["ignored_splits"] == ["unsupervised"]
+    assert "val carved from train: no published split" in report["warnings"]
+    assert "test carved from train: no published test split" in report["warnings"]
+
+
+def test_check_data_local_single_file_warning(runner, seq_jsonl, tmp_path):
+    _, report = _checked(runner, seq_jsonl, tmp_path)
+    assert report["split_origin"] == {"train": "provided", "val": "carved from train", "test": "carved from train"}
+    assert "val carved from train: single file given" in report["warnings"]
+
+
+def test_hf_not_found_is_json_error(runner, tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("could not load hf:x/y: not found")
+
+    monkeypatch.setattr(sources, "_resolve_revision", boom)
+    r = _hf_new(runner)
+    assert r.exit_code == 2
+    assert "could not load" in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists() or not list((tmp_path / "experiments").iterdir())
+
+
+def test_hf_load_failure_leaves_no_experiment(runner, tmp_path, monkeypatch):
+    monkeypatch.setattr(sources, "_resolve_revision", lambda repo, rev, cfg=None: "abc123")
+
+    def boom(*a, **k):
+        raise ValueError("could not load hf:x/y: gone")
+
+    monkeypatch.setattr(sources, "_load_dataset", boom)
+    r = _hf_new(runner)
+    assert r.exit_code == 2 and "could not load" in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists() or not list((tmp_path / "experiments").iterdir())
+
+
+def test_train_and_source_both_refused(runner, seq_jsonl, tmp_path, monkeypatch):
+    _hf_published(monkeypatch)
+    r = _new(runner, seq_jsonl, "--source", "hf:x/y")
+    assert r.exit_code == 2 and _out(r) == {"error": "give --train or --source, not both"}
+
+
+def test_neither_train_nor_source_refused(runner):
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--metric", "macro_f1"])
+    assert r.exit_code == 2 and _out(r) == {"error": "give --train or --source"}
+
+
+def test_source_with_val_or_revision_without_source_refused(runner, seq_jsonl, monkeypatch):
+    _hf_published(monkeypatch)
+    r = _hf_new(runner, "--val", "v.jsonl", "--test", "t.jsonl")
+    assert r.exit_code == 2 and _out(r) == {"error": "--val and --test only apply with --train"}
+    r = _new(runner, seq_jsonl, "--revision", "main")
+    assert r.exit_code == 2 and _out(r) == {"error": "--revision only applies with --source"}
+
+
+def test_bad_hf_spec_is_one_line_error(runner):
+    r = runner.invoke(app, ["new", "n", "--task", "seq-cls", "--model", "tiny-bert", "--source", "glue",
+                            "--metric", "macro_f1"])
+    assert r.exit_code == 2 and "Hugging Face source must be" in _out(r)["error"]
+
+
+def test_hf_positive_class_checked_against_named_labels(runner, monkeypatch):
+    _hf_published(monkeypatch)
+    r = _hf_new(runner, "--positive-class", "injection")
+    assert r.exit_code == 0, r.stdout
+    r = _hf_new(runner, "--positive-class", "1", name="other")
+    assert r.exit_code == 2 and "not a train label" in _out(r)["error"]
+
+
+def test_existing_jsonl_experiment_yaml_still_loads(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    import yaml
+
+    raw = yaml.safe_load((d / "experiment.yaml").read_text())
+    for k in ("source", "revision"):
+        raw["data"].pop(k, None)
+    assert set(raw["data"]) <= {"train", "val", "test", "columns"}
+    cfg = ex.ExperimentConfig(**raw)
+    assert cfg.data.train == "data.jsonl" and cfg.data.source is None
