@@ -167,3 +167,11 @@ def test_lora_alpha_requires_lora_r():
     errs = validate_config({"lora_alpha": 32}, ["lora_alpha"], ["ce"], DEFAULTS, "seq-cls")
     assert any("lora_alpha" in e and "lora_r" in e for e in errs)
     assert validate_config({"lora_alpha": 32, "lora_r": 8}, ["lora_alpha", "lora_r"], ["ce"], DEFAULTS, "seq-cls") == []
+
+
+def test_catalog_defaults_match_trainer_defaults():
+    d = {n: e.default for n, e in ENTRIES.items()}
+    assert d["warmup"] == 0.05 and d["epochs"] == 2 and d["beta2"] == 0.999
+    assert d["lora_alpha"] == 16 and d["ema"] == 0.0 and d["batch"] == 8
+    assert d["asl_gamma_neg"] == 4 and d["asl_clip"] == 0.05 and d["dice_ce_weight"] == 0.5
+    assert d["hidden_dropout"] is None and d["attn_dropout"] is None
