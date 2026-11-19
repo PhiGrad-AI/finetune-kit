@@ -6,14 +6,12 @@ space, and write `search-space.md`.
 
 ## Before you start
 
-- `experiments/<exp>/data-report.md` must exist. If not, tell the user to run
-  `{{CMD}}check` first, and stop.
-- If `experiment.md` says a bake-off was chosen, `experiments/<exp>/bakeoff.md` must exist too.
-  If not, tell the user to run `{{CMD}}bakeoff` first, and stop.
-- **New round?** If `experiments/<exp>/search-space.md` already exists, this is a rerun. Read
-  `experiments/<exp>/search-space.yaml` (its `round` field) and tell the user: "This starts
-  round N+1. The best run so far, the noise floor (σ) and the remaining budget carry over;
-  research continues from the current best with the new settings open."
+{{ORDER_CHECK}}
+
+**New round?** If `experiments/<exp>/search-space.yaml` already exists, this is a rerun. Read its
+`round` field and tell the user: "This starts round N+1. The best run so far, the noise floor (σ)
+and the remaining budget carry over; research continues from the current best with the new
+settings open."
 
 ## How to work in this stage
 
@@ -96,5 +94,4 @@ you picked.
 
 ## Finish
 
-If `experiments/<exp>/baseline.md` does not exist yet, the next command is `{{CMD}}baseline`.
-If it does (a new round), the next command is `{{CMD}}research`. Tell the user which.
+{{FINISH}}

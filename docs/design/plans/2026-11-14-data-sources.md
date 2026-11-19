@@ -1,14 +1,12 @@
 # finetune-kit data sources Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Let finetune-kit read local CSV / TSV / Parquet files and Hugging Face datasets (with their own splits) in addition to JSONL, with a column mapping and generated ids.
 
 **Architecture:** A new module `finetune_kit/sources.py` turns any source into the standard row dicts (`id`, `text`, `label` or `id`, `tokens`, `tags`, optional `group_id`); `data.py` keeps validation. `experiment.DataPaths` gains `columns`, `source` and `revision`. `commands.setup_experiment` and `commands.check_data` go through one `sources.load_source(...)` call. A new `inspect-data` command describes a source without printing row text. Frozen splits, checksums and the test vault are unchanged.
 
 **Tech Stack:** existing stack plus `datasets` (Hugging Face) and `pyarrow` (Parquet).
 
-**Spec:** `docs/superpowers/specs/2026-11-14-data-sources-design.md` (parent: `docs/superpowers/specs/2026-11-14-finetune-kit-design.md`)
+**Spec:** `docs/design/specs/2026-11-14-data-sources-design.md` (parent: `docs/design/specs/2026-11-14-finetune-kit-design.md`)
 
 ## Global Constraints
 

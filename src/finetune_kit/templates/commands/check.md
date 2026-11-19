@@ -5,8 +5,7 @@ train / validation / test splits, and write `data-report.md`.
 
 ## Before you start
 
-`experiments/<exp>/experiment.md` must exist. If it does not, the setup stage has not run:
-tell the user to run `{{CMD}}setup` first, and stop.
+{{ORDER_CHECK}}
 
 ## How to work in this stage
 
@@ -88,5 +87,4 @@ you picked.
 
 ## Finish
 
-Read `experiment.md`. If the user chose a bake-off, the next command is `{{CMD}}bakeoff`;
-otherwise it is `{{CMD}}hparams`. Tell the user which, in one line.
+{{FINISH}}

@@ -6,8 +6,7 @@ rule. Everything is kept in files, so this stage can be stopped and resumed at a
 
 ## Before you start
 
-`experiments/<exp>/baseline.md` must exist. If it does not, tell the user to run
-`{{CMD}}baseline` first, and stop.
+{{ORDER_CHECK}}
 
 ## How to work in this stage
 
@@ -118,8 +117,8 @@ Repeat:
 
 ## Finish
 
-When `compare` says `stop: true` (or the budget is spent), append a `## Summary` section to
-`log.md`:
+When `compare` says `stop: true` (or the budget is spent), append a `## Summary (round N)` section to
+`log.md`, where N is the `round` in `search-space.yaml`:
 - why research stopped (10 non-keeps in a row, or budget);
 - how many runs, and how many keeps, keep-simplers, discards and crashes;
 - the chain of kept changes, in order;
@@ -127,5 +126,6 @@ When `compare` says `stop: true` (or the budget is spent), append a `## Summary`
 - what did not help;
 - ideas for next time, including settings that are not open yet.
 
-Tell the user in a few lines what research found. Next command: `{{CMD}}analyze`. (To open more
-settings and continue in a new round instead: `{{CMD}}hparams`, then `{{CMD}}research`.)
+Tell the user in a few lines what research found.
+
+{{FINISH}}

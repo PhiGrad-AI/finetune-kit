@@ -5,12 +5,22 @@ pick one, fix it for the experiment, and write `bakeoff.md`.
 
 ## Before you start
 
-`experiments/<exp>/data-report.md` must exist. If it does not, the data check has not run: tell
-the user to run `{{CMD}}check` first, and stop.
+{{ORDER_CHECK}}
 
-Read `experiments/<exp>/experiment.md`. If the user did **not** choose a bake-off at setup, say
-the bake-off is skipped for this experiment and that the next command is `{{CMD}}hparams`, and
-stop (unless the user now asks for a bake-off; then ask which 2–3 models and go on).
+`next` names `bakeoff` as the stage only when a bake-off was requested at setup
+(the `bakeoff` field of `experiment.yaml`) and no model is chosen yet. If it names a later
+stage, the bake-off is skipped or already done for this experiment. Say so and use the hand-off
+in the Finish section, unless the user now asks for a bake-off.
+
+- **Late bake-off.** If the user opts in now although none was requested at setup, ask which
+  2–3 models and run it through to `finetune-kit bakeoff choose <exp> <model>` and `bakeoff.md`,
+  so `finetune-kit next` agrees at Finish. If the bake-off is abandoned midway, tell the user it
+  is incomplete and that `finetune-kit next` will move on to `hparams` without it.
+- **Too late for a bake-off.** Once the baseline stage has run, the model is locked: a bake-off
+  needs a new experiment (`{{CMD}}setup`), and `bakeoff choose` will refuse. Say so instead.
+- **Requested at setup, user declines.** If `next` names `bakeoff` and the user declines, say the
+  bake-off was requested at setup and the experiment cannot move past it until a model is chosen
+  (`finetune-kit bakeoff choose <exp> <model>` with the setup model counts as choosing).
 
 ## How to work in this stage
 
@@ -42,7 +52,7 @@ you picked.
    `finetune-kit status <exp>` and wait for them (step 3).
 
 2. **Start.** Tell the user the candidates and that each one is trained `seeds` times (from
-   `experiment.md`) with its default settings; this can take hours. Then run
+   `experiment.yaml`) with its default settings; this can take hours. Then run
    `finetune-kit bakeoff <exp> --models <a>,<b>[,<c>]`. It returns the `run_ids`.
 
 3. **Wait** for every run id in turn with the `finetune-kit wait` loop. When a run ends, give the
@@ -69,4 +79,4 @@ you picked.
 
 ## Finish
 
-Next command: `{{CMD}}hparams`.
+{{FINISH}}

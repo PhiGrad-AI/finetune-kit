@@ -6,8 +6,7 @@ Write `baseline.md`.
 
 ## Before you start
 
-`experiments/<exp>/search-space.md` must exist. If it does not, tell the user to run
-`{{CMD}}hparams` first, and stop.
+{{ORDER_CHECK}}
 
 ## How to work in this stage
 
@@ -76,4 +75,6 @@ you picked.
 ## Finish
 
 Tell the user research can now run on its own for hours, and can be stopped and resumed at any
-time. Next command: `{{CMD}}research`.
+time.
+
+{{FINISH}}
