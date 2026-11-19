@@ -5,9 +5,9 @@ export the final model with its threshold, speed figures and a standalone `predi
 
 ## Before you start
 
-`experiments/<exp>/report.md` must exist. If it does not:
+{{ORDER_CHECK}}
 
-{{GOTO_NEXT}}
+If `report.md` is missing, say so; `finetune-kit compare` has all you need to choose the run.
 
 ## How to work in this stage
 

@@ -5,6 +5,7 @@ section); user files and experiments/ are never touched. A research-rules.md the
 edited is kept unless `force`.
 """
 import json
+import textwrap
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -67,12 +68,39 @@ def stage_file(stage: str, ai: str) -> str:
     return f"{agent.commands}/finetune-kit.{stage}.md"
 
 
+def _words(names: list[str]) -> str:
+    quoted = [f"`{n}`" for n in names]
+    return quoted[0] if len(quoted) == 1 else ", ".join(quoted[:-1]) + " or " + quoted[-1]
+
+
+def _order_words(stage: str) -> dict[str, str]:
+    """What the shared order check (_goto.md) says for `stage`: which stages are earlier, and when to go on."""
+    i = STAGES.index(stage)
+    earlier, later = STAGES[:i], STAGES[i + 1:]
+    if later:
+        go_on = (f"If `stage` is `{stage}` or a later stage ({_words(later)}), continue with this stage "
+                 "below; its own steps check what is already done.")
+    else:
+        go_on = (f"You may continue with this stage only if `stage` is exactly `{stage}`. Scoring the test "
+                 "set cannot be undone, so never promote when `next` names any other stage. One exception: "
+                 "`setup` with the reason \"this experiment is complete; start a new one\" means it was "
+                 "promoted already; then do only step 1 under Steps (Already done?): summarize, never promote again.")
+    return {
+        "{{STAGE_ORDER}}": " → ".join(STAGES),
+        "{{STAGE}}": stage,
+        "{{EARLIER}}": _words(earlier) if earlier else "none",
+        "{{CONTINUE_WHEN}}": textwrap.fill(go_on, width=93, subsequent_indent="   "),
+    }
+
+
 def render(stage: str, ai: str) -> str:
     """The stage prompt for one agent: frontmatter for skills, shared blocks and {{CMD}} filled in."""
     agent = AGENTS[ai]
     body = _template("commands", f"{stage}.md")
-    for key, shared in (("{{FINISH}}", "_finish.md"), ("{{GOTO_NEXT}}", "_goto.md")):
+    for key, shared in (("{{FINISH}}", "_finish.md"), ("{{ORDER_CHECK}}", "_goto.md")):
         body = body.replace(key, _template("commands", shared).rstrip("\n"))
+    for key, value in _order_words(stage).items():
+        body = body.replace(key, value)
     body = body.replace("{{CMD}}", agent.invoke).replace("{{STAGE_FILE}}", stage_file("<stage>", ai))
     if agent.kind == "skill":
         head = f"---\nname: finetune-kit-{stage}\ndescription: {DESCRIPTIONS[stage]}\n---\n\n"

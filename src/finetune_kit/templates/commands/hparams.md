@@ -6,15 +6,12 @@ space, and write `search-space.md`.
 
 ## Before you start
 
-- `experiments/<exp>/data-report.md` must exist, and if a bake-off was requested,
-  `experiments/<exp>/bakeoff.md` must exist too. Run `finetune-kit next <exp>`: if it names
-  `check` or `bakeoff` as the stage, one of them is missing: use the hand-off below this list.
-- **New round?** If `experiments/<exp>/search-space.md` already exists, this is a rerun. Read
-  `experiments/<exp>/search-space.yaml` (its `round` field) and tell the user: "This starts
-  round N+1. The best run so far, the noise floor (σ) and the remaining budget carry over;
-  research continues from the current best with the new settings open."
+{{ORDER_CHECK}}
 
-{{GOTO_NEXT}}
+**New round?** If `experiments/<exp>/search-space.yaml` already exists, this is a rerun. Read its
+`round` field and tell the user: "This starts round N+1. The best run so far, the noise floor (σ)
+and the remaining budget carry over; research continues from the current best with the new
+settings open."
 
 ## How to work in this stage
 

@@ -6,9 +6,7 @@ rule. Everything is kept in files, so this stage can be stopped and resumed at a
 
 ## Before you start
 
-`experiments/<exp>/baseline.md` must exist. If it does not:
-
-{{GOTO_NEXT}}
+{{ORDER_CHECK}}
 
 ## How to work in this stage
 

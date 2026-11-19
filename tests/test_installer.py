@@ -373,7 +373,7 @@ def test_finish_says_what_to_do_on_no_and_requires_a_yes():
     assert "Never start a stage the user has not agreed to" in text
 
 
-def test_goto_handles_a_missing_experiment():
+def test_order_check_handles_a_missing_experiment():
     assert "no argument" in installer.render("check", "codex").split("## How to work", 1)[0]
 
 
@@ -384,3 +384,47 @@ def test_rules_forbid_skipping_a_stage():
 
 def _template_text(*parts):
     return (resources.files("finetune_kit") / "templates").joinpath(*parts).read_text(encoding="utf-8")
+
+
+# ---- "Before you start": the shared order check ----
+
+def _before(stage, ai="codex"):
+    return installer.render(stage, ai).split("## Before you start", 1)[1].split("## How to work", 1)[0]
+
+
+@pytest.mark.parametrize("ai", ["claude", "codex", "cursor"])
+def test_hparams_order_check_is_conditional(ai):
+    before = _before("hparams", ai)
+    assert "This is the `hparams` stage." in before
+    flat = " ".join(before.split())
+    assert ("If `stage` is `hparams` or a later stage (`baseline`, `research`, `analyze` or "
+            "`promote`), continue with this stage") in flat
+    assert ("Otherwise, if `stage` is an earlier stage, do not start this stage: that stage is not "
+            "done yet. Earlier stages: `setup`, `check` or `bakeoff`.") in flat
+    assert "finetune-kit next <exp>" in before and "Shall I start <stage> now?" in before
+    # the hand-off is a branch of the check, never an unconditional instruction
+    assert "Go to the stage that comes first" not in before
+
+
+@pytest.mark.parametrize("stage", [s for s in STAGES if s != "setup"])
+def test_every_order_check_names_its_stage_and_gates_on_no_write_up(stage):
+    before = _before(stage)
+    assert f"This is the `{stage}` stage." in before
+    assert "Otherwise, if `stage` is an earlier stage" in before
+    assert "must exist" not in before
+    assert "{{" not in before
+
+
+def test_promote_goes_on_only_when_next_names_promote():
+    before = " ".join(_before("promote").split())
+    assert "continue with this stage only if `stage` is exactly `promote`" in before
+    assert "If `stage` is `promote` or a later stage" not in before
+
+
+def test_analyze_interim_names_the_round():
+    assert "`## Summary (round N)`" in installer.render("analyze", "codex")
+
+
+def test_bakeoff_after_baseline_needs_a_new_experiment():
+    text = installer.render("bakeoff", "codex")
+    assert "needs a new experiment" in text and "`bakeoff choose` will refuse" in text

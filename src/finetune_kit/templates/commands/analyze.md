@@ -6,12 +6,13 @@ hurt, what to open next, and an error analysis of the best run's validation mist
 
 ## Before you start
 
-`experiments/<exp>/log.md` must exist. If it does not, the research stage has not run:
+{{ORDER_CHECK}}
 
-{{GOTO_NEXT}}
-
-If `log.md` has no `## Summary` yet, research is
-still going or was interrupted: say this report is interim, and go on.
+**Interim report.** If `next` names `research` and the user declines it but asks for a report
+anyway, you may go on: say plainly that this report is interim, because research round N (the
+`round` in `search-space.yaml`) has no `## Summary (round N)` in `log.md` yet (a bare `## Summary`
+counts for round 1). If `log.md` is missing, take what helped and hurt from the verdicts in
+`finetune-kit compare` instead.
 
 ## How to work in this stage
 

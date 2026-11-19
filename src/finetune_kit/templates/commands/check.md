@@ -5,9 +5,7 @@ train / validation / test splits, and write `data-report.md`.
 
 ## Before you start
 
-`experiments/<exp>/experiment.md` must exist. If it does not, the setup stage has not run:
-
-{{GOTO_NEXT}}
+{{ORDER_CHECK}}
 
 ## How to work in this stage
 
