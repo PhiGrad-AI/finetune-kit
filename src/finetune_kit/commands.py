@@ -6,7 +6,7 @@ import re
 import shutil
 from pathlib import Path
 
-from finetune_kit import data, experiment as ex, metrics, sources, store
+from finetune_kit import catalog, data, experiment as ex, metrics, sources, store
 from finetune_kit.paths import vault_dir
 
 STREAK_STOP = 10
@@ -134,6 +134,17 @@ def validate_goal(
     return cm
 
 
+def check_budget(*, seeds: int, max_runs: int, max_hours: float, subset: int | None) -> None:
+    if seeds < 2:
+        raise ValueError("--seeds must be at least 2: the noise floor needs a standard deviation")
+    if max_runs < 1:
+        raise ValueError("--max-runs must be at least 1")
+    if not max_hours > 0:
+        raise ValueError("--max-hours must be greater than 0")
+    if subset is not None and subset < 1:
+        raise ValueError("--subset must be at least 1")
+
+
 def setup_experiment(
     root: Path, name: str, *, task: str, model: str | None = None, train: str | None = None,
     val: str | None = None, test: str | None = None, source: str | None = None,
@@ -149,8 +160,7 @@ def setup_experiment(
         raise ValueError(f"experiment name {name!r} has no letters or digits")
     if task not in ("seq-cls", "token-cls"):
         raise ValueError(f"--task must be seq-cls or token-cls, not {task!r}")
-    if seeds < 2:
-        raise ValueError("--seeds must be at least 2: the noise floor needs a standard deviation")
+    check_budget(seeds=seeds, max_runs=max_runs, max_hours=max_hours, subset=subset)
     budget = ex.Budget(max_runs=max_runs, max_hours=max_hours)
     if model is None and train is None and source is None and metric is None:
         if val or test or revision or guardrail or positive_class or custom_metric or direction or bakeoff or columns:
@@ -254,6 +264,76 @@ def set_goal(
         "positive_class": cfg.positive_class,
         "custom_metric": cfg.custom_metric.model_dump() if cfg.custom_metric else None,
     }
+
+
+def _noise_started(exp_dir: Path, state: ex.State) -> bool:
+    return state.sigma_obj is not None or any(r["stage"] == "noise" for r in store.list_requests(exp_dir))
+
+
+def _checked_setup(exp_dir: Path) -> ex.ExperimentConfig:
+    cfg, _, _ = ex.load(exp_dir)
+    ex.require_setup(cfg)
+    if not (exp_dir / "splits" / "train.jsonl").is_file():
+        raise ValueError("check the data first (step: check-data)")
+    return cfg
+
+
+def set_losses(exp_dir: Path, losses: list[str]) -> dict:
+    """Which losses research may try. Kept in state.json so a later round can change it freely."""
+    exp_dir = Path(exp_dir)
+    with ex.state_lock(exp_dir):
+        cfg = _checked_setup(exp_dir)
+        state = ex.load(exp_dir)[2]
+        if any(r["stage"] == "research" and r["status"] not in store.TERMINAL for r in store.list_requests(exp_dir)):
+            raise ValueError("research runs are still pending; wait for them before changing the losses")
+        allowed = catalog.LOSSES[cfg.task]
+        for l in losses:
+            if l not in allowed:
+                raise ValueError(f"loss {l!r} is not allowed for {cfg.task} (allowed: {', '.join(allowed)})")
+        state.chosen_losses = ["ce"] + [l for l in dict.fromkeys(losses) if l != "ce"]
+        if state.sigma_obj is not None:
+            state.round_open = True  # after the noise run this starts a new round
+        ex.save_state(exp_dir, state)
+    return {"losses": state.chosen_losses}
+
+
+def set_learning_rate(exp_dir: Path, choice: str) -> dict:
+    if choice not in ("default", "scan"):
+        raise ValueError("the learning rate is either default or scan")
+    exp_dir = Path(exp_dir)
+    with ex.state_lock(exp_dir):
+        _checked_setup(exp_dir)
+        state = ex.load(exp_dir)[2]
+        if _noise_started(exp_dir, state):
+            raise ValueError("the learning rate is fixed once the experiment has started")
+        state.lr_choice = choice
+        ex.save_state(exp_dir, state)
+    return {"learning_rate": choice}
+
+
+def set_experiments(
+    exp_dir: Path, *, max_runs: int | None = None, max_hours: float | None = None,
+    seeds: int | None = None, subset: int | None = None,
+) -> dict:
+    exp_dir = Path(exp_dir)
+    with ex.state_lock(exp_dir):
+        cfg, _, state = ex.load(exp_dir)
+        ex.require_setup(cfg)
+        if _noise_started(exp_dir, state):
+            raise ValueError("the experiment budget is fixed once the experiment has started")
+        runs = cfg.budget.max_runs if max_runs is None else max_runs
+        hours = cfg.budget.max_hours if max_hours is None else max_hours
+        n_seeds = cfg.seeds if seeds is None else seeds
+        n_subset = cfg.research_subset if subset is None else subset
+        check_budget(seeds=n_seeds, max_runs=runs, max_hours=hours, subset=n_subset)
+        cfg = cfg.model_copy(update={
+            "seeds": n_seeds, "research_subset": n_subset,
+            "budget": ex.Budget(max_runs=runs, max_hours=hours),
+        })
+        ex.save_config(exp_dir, cfg)
+        state.budget_chosen = True
+        ex.save_state(exp_dir, state)
+    return {"max_runs": runs, "max_hours": hours, "seeds": n_seeds, "subset": n_subset}
 
 
 # ---- check-data ----

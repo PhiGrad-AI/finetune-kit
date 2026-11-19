@@ -103,6 +103,10 @@ class State(BaseModel):
     model_locked: bool = False
     finalized: dict[str, str] = Field(default_factory=dict)  # run_id -> verdict, written by the worker
     request_hashes: dict[str, str] = Field(default_factory=dict)  # run_id -> sha256 at enqueue
+    chosen_losses: list[str] | None = None  # `set losses`; here, not in experiment.yaml, so later rounds can change it
+    lr_choice: Literal["default", "scan"] | None = None
+    budget_chosen: bool = False
+    round_open: bool = False  # a new round's losses are chosen but its search space is not committed yet
 
 
 def _slug(name: str) -> str:
@@ -137,10 +141,22 @@ def require_setup(cfg: ExperimentConfig) -> None:
 def save_config(exp_dir: Path, cfg: ExperimentConfig) -> None:
     """Atomic rewrite of experiment.yaml (temp file + os.replace)."""
     path = Path(exp_dir) / "experiment.yaml"
+    text = yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False)
+    try:
+        mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".experiment.")
-    with os.fdopen(fd, "w") as f:
-        f.write(yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False))
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def new_experiment(root: Path, name: str, cfg: ExperimentConfig) -> Path:
@@ -223,6 +239,7 @@ def _commit_space(exp_dir: Path, space: SearchSpace) -> State:
         if l not in allowed:
             raise ValueError(f"loss {l!r} is not allowed for {cfg.task} (allowed: {', '.join(allowed)})")
     state.round += 1
+    state.round_open = False
     if state.round > 1:
         state.non_keep_streak = 0  # a reopened space starts a fresh run of non-keeps
     _dump_yaml(exp_dir / SPACE_FILE, space.model_copy(update={"round": state.round}))

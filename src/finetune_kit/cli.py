@@ -460,6 +460,45 @@ def set_goal(
         ))
 
 
+@set_app.command("losses")
+def set_losses(
+    exp: str = typer.Argument(..., help="Experiment: number, name or path."),
+    losses: str = typer.Argument(..., help="Comma-separated losses research may try (ce is always allowed)."),
+) -> None:
+    """Choose which losses research may try. After the noise run this opens a new round."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        emit(cmd.set_losses(_exp(exp), [l.strip() for l in losses.split(",") if l.strip()]))
+
+
+@set_app.command("learning-rate")
+def set_learning_rate(
+    exp: str = typer.Argument(..., help="Experiment: number, name or path."),
+    choice: str = typer.Argument(..., help="default | scan (scan: run `lr-scan` next)."),
+) -> None:
+    """Choose the default learning rate or a scan. Refused once the noise run has started."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        emit(cmd.set_learning_rate(_exp(exp), choice))
+
+
+@set_app.command("experiments")
+def set_experiments(
+    exp: str = typer.Argument(..., help="Experiment: number, name or path."),
+    max_runs: Optional[int] = typer.Option(None, "--max-runs"),
+    max_hours: Optional[float] = typer.Option(None, "--max-hours"),
+    seeds: Optional[int] = typer.Option(None, "--seeds"),
+    subset: Optional[int] = typer.Option(None, "--subset", help="Research train subset size."),
+) -> None:
+    """Choose the experiment budget and seeds. Refused once the noise run has started."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        emit(cmd.set_experiments(_exp(exp), max_runs=max_runs, max_hours=max_hours, seeds=seeds, subset=subset))
+
+
 @app.command("next")
 def next_(exp: Optional[str] = typer.Argument(None, help="Experiment (default: the highest-numbered).")) -> None:
     """Say which stage comes next for an experiment, and why."""
@@ -577,18 +616,22 @@ def space_commit(
     exp: str = typer.Argument(..., help="Experiment: number, name or path."),
     tunable: str = typer.Option(..., "--tunable", help="Comma-separated hyperparameter names."),
     losses: Optional[str] = typer.Option(
-        None, "--losses", help="Comma-separated losses research may try (required; ce is always allowed)."
+        None, "--losses",
+        help="Comma-separated losses research may try (ce is always allowed; defaults to `set losses`).",
     ),
 ) -> None:
     """Commit (or re-commit, next round) the tunable hyperparameters and losses."""
     from finetune_kit import experiment as ex
 
     with _errors():
-        if losses is None or not losses.strip():
+        exp_dir = _exp(exp)
+        chosen = ex.load(exp_dir)[2].chosen_losses if losses is None else None
+        if chosen is None and (losses is None or not losses.strip()):
             raise ValueError(
                 "--losses is required: say which losses research may try (e.g. --losses ce or ce,focal)"
             )
-        exp_dir = _exp(exp)
+        if chosen is not None:
+            losses = ",".join(chosen)
         ex.require_setup(ex.load(exp_dir)[0])
         names = [t.strip() for t in tunable.split(",") if t.strip()]
         allowed = ["ce"] + [l for l in dict.fromkeys(l.strip() for l in losses.split(",")) if l and l != "ce"]
