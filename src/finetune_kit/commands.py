@@ -267,7 +267,10 @@ def set_goal(
 
 
 def _noise_started(exp_dir: Path, state: ex.State) -> bool:
-    return state.sigma_obj is not None or any(r["stage"] == "noise" for r in store.list_requests(exp_dir))
+    return (
+        state.sigma_obj is not None or ex.CONFIG_KEY in state.checksums
+        or any(r["stage"] == "noise" for r in store.list_requests(exp_dir))
+    )
 
 
 def _checked_setup(exp_dir: Path) -> ex.ExperimentConfig:

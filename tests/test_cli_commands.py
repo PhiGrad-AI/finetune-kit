@@ -1076,3 +1076,34 @@ def test_save_config_normal_mode_and_cleanup(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         ex.save_config(d, cfg)
     assert sorted(p.name for p in d.iterdir()) == ["experiment.yaml"]
+
+
+def test_baseline_checksum_locks_budget_and_lr_before_noise_request(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    ex.record_baseline_checksums(d, store.profile_for(ex.load(d)[0], {}, store.project_root(d)))
+    assert not any(r["stage"] == "noise" for r in store.list_requests(d))
+    before = (d / "experiment.yaml").read_text()
+    r = runner.invoke(app, ["set", "experiments", "001", "--seeds", "5"])
+    assert r.exit_code == 2 and "fixed once the experiment has started" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "learning-rate", "001", "scan"])
+    assert r.exit_code == 2 and "fixed once the experiment has started" in _out(r)["error"]
+    assert (d / "experiment.yaml").read_text() == before
+    ex.verify_checksums(d, store.project_root(d))
+
+
+@pytest.mark.parametrize("args,msg", [(["--max-runs", "0"], "max-runs"), (["--max-hours", "0"], "max-hours")])
+def test_new_refuses_empty_budget(runner, seq_jsonl, tmp_path, args, msg):
+    r = _new(runner, seq_jsonl, *args)
+    assert r.exit_code == 2 and msg in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists()
+
+
+def test_set_losses_after_noise_opens_next_round(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    with ex.state_lock(d):
+        st = ex.load(d)[2]
+        st.sigma_obj = 0.01
+        ex.save_state(d, st)
+    assert _state_of(tmp_path).round_open is False
+    assert runner.invoke(app, ["set", "losses", "001", "ce,focal"]).exit_code == 0
+    assert _state_of(tmp_path).round_open is True
