@@ -601,3 +601,142 @@ def test_new_id_null_mapping_saved(runner, tmp_path):
     assert r.exit_code == 0, r.stdout
     assert ex.load(_exp_dir(tmp_path))[0].data.columns == {"id": None}
     assert runner.invoke(app, ["check-data", "001"]).exit_code == 0
+
+
+# ---- next ----
+def _next(runner, *args):
+    r = runner.invoke(app, ["next", *args])
+    assert r.exit_code == 0, r.stdout
+    return _out(r)
+
+
+def _set_state(d, **kw):
+    cfg, space, state = ex.load(d)
+    ex.save_state(d, state.model_copy(update=kw))
+
+
+def _splits(d):
+    (d / "splits").mkdir(exist_ok=True)
+    (d / "splits" / "train.jsonl").write_text("{}\n")
+
+
+def _space(d):
+    (d / "search-space.yaml").write_text("round: 1\ntunable: [lr]\nlosses: [ce]\n")
+
+
+def test_next_no_experiment_is_setup(runner, tmp_path):
+    out = _next(runner)
+    assert out == {"experiment": None, "stage": "setup", "reason": "no experiment yet", "alternatives": []}
+    (tmp_path / "experiments").mkdir()
+    assert _next(runner)["stage"] == "setup"
+
+
+def test_next_order_check_then_hparams(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    out = _next(runner)
+    assert out["experiment"] == "001-gate" and out["stage"] == "check"
+    assert out["reason"] == "data not checked and split yet"
+    _splits(d)
+    out = _next(runner, "001")
+    assert out["stage"] == "hparams" and out["reason"] == "no search space committed yet"
+
+
+def test_next_bakeoff_before_hparams_until_locked(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl, "--bakeoff", "tiny-bert,tiny-roberta").exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    out = _next(runner)
+    assert out["stage"] == "bakeoff"
+    assert out["reason"] == "a bake-off was requested and no model is chosen yet"
+    _set_state(d, model_locked=True)
+    assert _next(runner)["stage"] == "hparams"
+
+
+def test_next_baseline_then_research(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    out = _next(runner)
+    assert out["stage"] == "baseline" and out["reason"] == "noise floor not measured yet"
+    _set_state(d, sigma_obj=0.01, round=1)
+    out = _next(runner)
+    assert out["stage"] == "research" and out["reason"] == "research round 1 is not finished"
+    (d / "log.md").write_text("# log\n## Summary (round 1)\nok\n")
+    assert _next(runner)["stage"] == "analyze"
+
+
+def test_next_research_done_then_analyze_with_alternative(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, sigma_obj=0.01, round=1)
+    (d / "log.md").write_text("## Summary\n")
+    out = _next(runner)
+    assert out["stage"] == "analyze" and out["reason"] == "results not analyzed yet"
+    assert out["alternatives"] == [{"stage": "hparams", "reason": "open more settings for another research round"}]
+    import os
+
+    (d / "report.md").write_text("r")
+    t = (d / "log.md").stat().st_mtime
+    os.utime(d / "report.md", (t - 10, t - 10))
+    assert _next(runner)["stage"] == "analyze"
+    os.utime(d / "report.md", (t + 10, t + 10))
+    out = _next(runner)
+    assert out["stage"] == "promote" and out["reason"] == "final model not trained and scored yet"
+    assert out["alternatives"] == [{"stage": "hparams", "reason": "open more settings for another research round"}]
+
+
+def test_next_new_round_returns_research(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, sigma_obj=0.01, round=2)
+    (d / "log.md").write_text("## Summary\n")
+    (d / "report.md").write_text("r")
+    out = _next(runner)
+    assert out["stage"] == "research" and out["reason"] == "research round 2 is not finished"
+    (d / "log.md").write_text("## Summary (round 2)\n")
+    import os
+
+    os.utime(d / "report.md", (1, 1))
+    assert _next(runner)["stage"] == "analyze"
+
+
+def test_next_promote_pending_then_done(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, sigma_obj=0.01, round=1, promote_pending="r009")
+    (d / "log.md").write_text("## Summary\n")
+    (d / "report.md").write_text("r")
+    out = _next(runner)
+    assert out["stage"] == "promote" and out["reason"] == "promote is running"
+    _set_state(d, promote_pending=None, promoted=True)
+    out = _next(runner)
+    assert out["stage"] == "setup" and out["reason"] == "this experiment is complete; start a new one"
+
+
+def test_new_bakeoff_validated_and_saved(runner, seq_jsonl, tmp_path):
+    for bad in ("tiny-bert", "tiny-roberta,tiny-bert", "tiny-bert,nope", "tiny-bert,tiny-roberta,tiny-bert,tiny-roberta"):
+        r = _new(runner, seq_jsonl, "--bakeoff", bad)
+        assert r.exit_code == 2, bad
+        assert _out(r)["error"] == "--bakeoff needs 2-3 models for seq-cls, the first being --model"
+    assert not (tmp_path / "experiments").exists()
+    assert _new(runner, seq_jsonl, "--bakeoff", "tiny-bert,tiny-roberta").exit_code == 0
+    assert ex.load(_exp_dir(tmp_path))[0].bakeoff == ["tiny-bert", "tiny-roberta"]
+
+
+def test_old_yaml_without_bakeoff_loads(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    import yaml
+
+    raw = yaml.safe_load((d / "experiment.yaml").read_text())
+    raw.pop("bakeoff", None)
+    (d / "experiment.yaml").write_text(yaml.safe_dump(raw))
+    assert ex.load(d)[0].bakeoff is None

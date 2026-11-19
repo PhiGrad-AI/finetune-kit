@@ -76,6 +76,7 @@ class ExperimentConfig(BaseModel):
     research_subset: int | None = None
     min_delta: float | None = None
     versions: dict[str, str] = Field(default_factory=dict)
+    bakeoff: list[str] | None = None  # candidate model keys when setup chose a bake-off
 
 
 class SearchSpace(BaseModel):

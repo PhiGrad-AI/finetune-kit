@@ -44,6 +44,7 @@ def setup_experiment(
     revision: str | None = None, metric: str, metric_params: dict, guardrail: str | None, guardrail_params: dict,
     positive_class: str | None, seeds: int, max_runs: int, max_hours: float, subset: int | None,
     custom_metric: str | None, direction: str | None, columns: dict | None = None,
+    bakeoff: list[str] | None = None,
 ) -> Path:
     from finetune_kit.profiles import load_profiles
 
@@ -64,6 +65,11 @@ def setup_experiment(
         raise ValueError(f"unknown model {model!r}; see `finetune-kit models`")
     if task not in profiles[model].tasks:
         raise ValueError(f"model {model!r} does not support {task}")
+    if bakeoff is not None:
+        if not (2 <= len(bakeoff) <= 3) or len(set(bakeoff)) != len(bakeoff) or bakeoff[0] != model or any(
+            k not in profiles or task not in profiles[k].tasks for k in bakeoff
+        ):
+            raise ValueError(f"--bakeoff needs 2-3 models for {task}, the first being --model")
     if source:
         sources.parse_hf(source)  # one-line error for a malformed spec
     for label, p in (("train", train), ("val", val), ("test", test)):
@@ -127,7 +133,7 @@ def setup_experiment(
         guardrail=ex.MetricRef(metric=guardrail, params=guardrail_params) if guardrail else None,
         positive_class=positive_class, custom_metric=cm, seeds=seeds,
         budget=ex.Budget(max_runs=max_runs, max_hours=max_hours), research_subset=subset,
-        versions=store.current_versions(profile),
+        versions=store.current_versions(profile), bakeoff=bakeoff,
     )
     return ex.new_experiment(root, name, cfg)
 
@@ -377,3 +383,52 @@ def _token_misses(val: list[dict], preds: list[list[str]], k: int) -> list[dict]
             bad.append((n_err, {"id": row["id"], "text": _trim(" ".join(row["tokens"])), "gold": gold, "pred": got}))
     bad.sort(key=lambda x: -x[0])
     return [b for _, b in bad[:k]]
+
+
+# ---- next ----
+_MORE_ROUND = {"stage": "hparams", "reason": "open more settings for another research round"}
+
+
+def _research_finished(exp_dir: Path, n: int) -> bool:
+    log = exp_dir / "log.md"
+    if not log.is_file():
+        return False
+    for line in log.read_text(errors="replace").splitlines():
+        line = line.rstrip()
+        if line.startswith(f"## Summary (round {n})") or (n <= 1 and line == "## Summary"):
+            return True
+    return False
+
+
+def next_stage(root: Path, exp_dir: Path | None) -> dict:
+    """Which stage comes next, from the experiment's files and state. First unmet condition wins."""
+    if exp_dir is None:
+        exp_root = Path(root) / "experiments"
+        dirs = sorted(d for d in exp_root.iterdir() if d.is_dir()) if exp_root.is_dir() else []
+        if not dirs:
+            return {"experiment": None, "stage": "setup", "reason": "no experiment yet", "alternatives": []}
+        exp_dir = dirs[-1]
+    exp_dir = Path(exp_dir)
+    cfg, space, state = ex.load(exp_dir)
+
+    def out(stage: str, reason: str, alternatives: list[dict] | None = None) -> dict:
+        return {"experiment": exp_dir.name, "stage": stage, "reason": reason, "alternatives": alternatives or []}
+
+    if not (exp_dir / "splits" / "train.jsonl").is_file():
+        return out("check", "data not checked and split yet")
+    if cfg.bakeoff and not state.model_locked:
+        return out("bakeoff", "a bake-off was requested and no model is chosen yet")
+    if not (exp_dir / ex.SPACE_FILE).is_file():
+        return out("hparams", "no search space committed yet")
+    if state.sigma_obj is None:
+        return out("baseline", "noise floor not measured yet")
+    if not _research_finished(exp_dir, state.round):
+        return out("research", f"research round {state.round} is not finished")
+    report, log = exp_dir / "report.md", exp_dir / "log.md"
+    if not report.is_file() or report.stat().st_mtime < log.stat().st_mtime:
+        return out("analyze", "results not analyzed yet", [dict(_MORE_ROUND)])
+    if state.promote_pending:
+        return out("promote", "promote is running")
+    if not state.promoted:
+        return out("promote", "final model not trained and scored yet", [dict(_MORE_ROUND)])
+    return out("setup", "this experiment is complete; start a new one")

@@ -375,6 +375,7 @@ def new(
     max_hours: float = typer.Option(24, "--max-hours"),
     subset: Optional[int] = typer.Option(None, "--subset", help="Research train subset size."),
     columns: str = typer.Option("{}", "--columns", help='JSON object mapping text/label/id/tokens/tags/group_id to your column names.'),
+    bakeoff: Optional[str] = typer.Option(None, "--bakeoff", help="2-3 model keys a,b[,c] to compare; the first is --model."),
 ) -> None:
     """Create experiments/NNN-name with its config and recorded versions."""
     from finetune_kit import commands as cmd
@@ -388,8 +389,19 @@ def new(
             positive_class=positive_class, seeds=seeds, max_runs=max_runs, max_hours=max_hours,
             subset=subset, custom_metric=custom_metric, direction=direction,
             columns=cmd.parse_params(columns, "--columns"),
+            bakeoff=[k.strip() for k in bakeoff.split(",")] if bakeoff is not None else None,
         )
     emit({"experiment": d.name, "path": str(d)})
+
+
+@app.command("next")
+def next_(exp: Optional[str] = typer.Argument(None, help="Experiment (default: the highest-numbered).")) -> None:
+    """Say which stage comes next for an experiment, and why."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        result = cmd.next_stage(Path.cwd(), _exp(exp) if exp else None)
+    emit(result)
 
 
 models_app = typer.Typer(add_completion=False, invoke_without_command=True, help="List or add model profiles.")
