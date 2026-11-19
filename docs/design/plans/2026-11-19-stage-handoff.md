@@ -1,14 +1,12 @@
 # finetune-kit stage hand-off Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Every stage ends by naming the next stage (decided by a new `finetune-kit next` command), showing its command, and asking to continue in the same conversation.
 
 **Architecture:** `commands.next_stage(root, exp)` computes the next stage from experiment files and state; CLI `next` prints it. `new --bakeoff` records a requested bake-off in `experiment.yaml`. One shared Finish template is rendered into all eight stage prompts by the installer with per-agent command prefix and prompt-file path.
 
 **Tech Stack:** existing (Python 3.12, typer, pydantic, pytest).
 
-**Spec:** `docs/superpowers/specs/2026-11-19-stage-handoff-design.md`
+**Spec:** `docs/design/specs/2026-11-19-stage-handoff-design.md`
 
 ## Global Constraints
 

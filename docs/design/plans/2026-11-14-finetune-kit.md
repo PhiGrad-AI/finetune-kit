@@ -1,14 +1,12 @@
 # finetune-kit Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Build `finetune-kit`, a CLI plus spec-kit-style agent commands that let Claude Code, Codex or Cursor run noise-aware fine-tuning research on BERT-family encoders for sequence and token classification.
 
 **Architecture:** One Python package (`finetune-kit`, command `finetune-kit`) holds everything that must not be editable by the agent: data checks, metrics, model profiles, the hyperparameter catalog, the trainer, a file-based run queue with a detached worker, the keep/discard statistics and promotion. `finetune-kit init --ai <agent>` writes eight stage prompts (setup → check → bakeoff (optional) → hparams → baseline → research → analyze → promote) in that agent's format plus `.finetune-kit/` rules and templates. All state lives in `experiments/NNN-<name>/` files; the test split lives in `~/.finetune-kit/vault/`.
 
 **Tech Stack:** Python ≥ 3.12, uv, typer, pydantic v2, PyYAML, numpy, scikit-learn, seqeval, torch ≥ 2.3, transformers ≥ 5.20, peft, pytorch-crf, pytest.
 
-**Spec:** `docs/superpowers/specs/2026-11-14-finetune-kit-design.md`
+**Spec:** `docs/design/specs/2026-11-14-finetune-kit-design.md`
 
 ## Global Constraints
 
