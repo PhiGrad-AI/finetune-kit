@@ -740,3 +740,18 @@ def test_old_yaml_without_bakeoff_loads(runner, seq_jsonl, tmp_path):
     raw.pop("bakeoff", None)
     (d / "experiment.yaml").write_text(yaml.safe_dump(raw))
     assert ex.load(d)[0].bakeoff is None
+
+
+def test_next_picks_highest_numeric_prefix_and_ignores_other_folders(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    root = tmp_path / "experiments"
+    (root / "archive").mkdir()
+    (root / "zzz-notes").mkdir()
+    import shutil
+
+    shutil.copytree(d, root / "999-x")
+    shutil.copytree(d, root / "1000-y")
+    _splits(root / "1000-y")
+    out = _next(runner)
+    assert out["experiment"] == "1000-y" and out["stage"] == "hparams"

@@ -2,6 +2,7 @@
 import csv
 import json
 import math
+import re
 import shutil
 from pathlib import Path
 
@@ -404,10 +405,11 @@ def next_stage(root: Path, exp_dir: Path | None) -> dict:
     """Which stage comes next, from the experiment's files and state. First unmet condition wins."""
     if exp_dir is None:
         exp_root = Path(root) / "experiments"
-        dirs = sorted(d for d in exp_root.iterdir() if d.is_dir()) if exp_root.is_dir() else []
-        if not dirs:
+        numbered = [(int(m.group(1)), d) for d in exp_root.iterdir()
+                    if d.is_dir() and (m := re.match(r"(\d+)-", d.name))] if exp_root.is_dir() else []
+        if not numbered:
             return {"experiment": None, "stage": "setup", "reason": "no experiment yet", "alternatives": []}
-        exp_dir = dirs[-1]
+        exp_dir = max(numbered, key=lambda nd: nd[0])[1]
     exp_dir = Path(exp_dir)
     cfg, space, state = ex.load(exp_dir)
 
