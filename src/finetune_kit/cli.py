@@ -509,6 +509,16 @@ def next_(exp: Optional[str] = typer.Argument(None, help="Experiment (default: t
     emit(result)
 
 
+@app.command("steps")
+def steps(exp: Optional[str] = typer.Argument(None, help="Experiment (default: the highest-numbered).")) -> None:
+    """List every step in plain words with its status, and which one is next."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        result = cmd.steps_overview(Path.cwd(), _exp(exp) if exp else None)
+    emit(result)
+
+
 models_app = typer.Typer(add_completion=False, invoke_without_command=True, help="List or add model profiles.")
 app.add_typer(models_app, name="models")
 

@@ -660,20 +660,20 @@ def _space(d):
 
 def test_next_no_experiment_is_setup(runner, tmp_path):
     out = _next(runner)
-    assert out == {"experiment": None, "stage": "setup", "reason": "no experiment yet", "alternatives": []}
+    assert out == {"experiment": None, "stage": "choose-task", "reason": "no experiment yet", "alternatives": []}
     (tmp_path / "experiments").mkdir()
-    assert _next(runner)["stage"] == "setup"
+    assert _next(runner)["stage"] == "choose-task"
 
 
 def test_next_order_check_then_hparams(runner, seq_jsonl, tmp_path):
     assert _new(runner, seq_jsonl).exit_code == 0
     d = _exp_dir(tmp_path)
     out = _next(runner)
-    assert out["experiment"] == "001-gate" and out["stage"] == "check"
+    assert out["experiment"] == "001-gate" and out["stage"] == "check-data"
     assert out["reason"] == "data not checked and split yet"
     _splits(d)
     out = _next(runner, "001")
-    assert out["stage"] == "hparams" and out["reason"] == "no search space committed yet"
+    assert out["stage"] == "choose-loss"
 
 
 def test_next_bakeoff_before_hparams_until_locked(runner, seq_jsonl, tmp_path):
@@ -681,10 +681,10 @@ def test_next_bakeoff_before_hparams_until_locked(runner, seq_jsonl, tmp_path):
     d = _exp_dir(tmp_path)
     _splits(d)
     out = _next(runner)
-    assert out["stage"] == "bakeoff"
-    assert out["reason"] == "a bake-off was requested and no model is chosen yet"
+    assert out["stage"] == "compare-models"
+    assert out["reason"] == "a comparison was requested and no model is chosen yet"
     _set_state(d, model_locked=True)
-    assert _next(runner)["stage"] == "hparams"
+    assert _next(runner)["stage"] == "choose-loss"
 
 
 def test_next_baseline_then_research(runner, seq_jsonl, tmp_path):
@@ -693,12 +693,12 @@ def test_next_baseline_then_research(runner, seq_jsonl, tmp_path):
     _splits(d)
     _space(d)
     out = _next(runner)
-    assert out["stage"] == "baseline" and out["reason"] == "noise floor not measured yet"
+    assert out["stage"] == "choose-learning-rate"
     _set_state(d, sigma_obj=0.01, round=1)
     out = _next(runner)
-    assert out["stage"] == "research" and out["reason"] == "research round 1 is not finished"
+    assert out["stage"] == "start-experiment" and out["reason"] == "research round 1 is still running"
     (d / "log.md").write_text("# log\n## Summary (round 1)\nok\n")
-    assert _next(runner)["stage"] == "analyze"
+    assert _next(runner)["stage"] == "report"
 
 
 def test_next_research_done_then_analyze_with_alternative(runner, seq_jsonl, tmp_path):
@@ -709,18 +709,18 @@ def test_next_research_done_then_analyze_with_alternative(runner, seq_jsonl, tmp
     _set_state(d, sigma_obj=0.01, round=1)
     (d / "log.md").write_text("## Summary\n")
     out = _next(runner)
-    assert out["stage"] == "analyze" and out["reason"] == "results not analyzed yet"
-    assert out["alternatives"] == [{"stage": "hparams", "reason": "open more settings for another research round"}]
+    assert out["stage"] == "report" and out["reason"] == "results not reported yet"
+    assert out["alternatives"] == [{"stage": "choose-loss", "reason": "try other losses or settings in another round"}]
     import os
 
     (d / "report.md").write_text("r")
     t = (d / "log.md").stat().st_mtime
     os.utime(d / "report.md", (t - 10, t - 10))
-    assert _next(runner)["stage"] == "analyze"
+    assert _next(runner)["stage"] == "report"
     os.utime(d / "report.md", (t + 10, t + 10))
     out = _next(runner)
-    assert out["stage"] == "promote" and out["reason"] == "final model not trained and scored yet"
-    assert out["alternatives"] == [{"stage": "hparams", "reason": "open more settings for another research round"}]
+    assert out["stage"] == "finish" and out["reason"] == "final model not trained and scored yet"
+    assert out["alternatives"] == [{"stage": "choose-loss", "reason": "try other losses or settings in another round"}]
 
 
 def test_next_new_round_returns_research(runner, seq_jsonl, tmp_path):
@@ -732,12 +732,12 @@ def test_next_new_round_returns_research(runner, seq_jsonl, tmp_path):
     (d / "log.md").write_text("## Summary\n")
     (d / "report.md").write_text("r")
     out = _next(runner)
-    assert out["stage"] == "research" and out["reason"] == "research round 2 is not finished"
+    assert out["stage"] == "start-experiment" and out["reason"] == "research round 2 is still running"
     (d / "log.md").write_text("## Summary (round 2)\n")
     import os
 
     os.utime(d / "report.md", (1, 1))
-    assert _next(runner)["stage"] == "analyze"
+    assert _next(runner)["stage"] == "report"
 
 
 def test_next_promote_pending_then_done(runner, seq_jsonl, tmp_path):
@@ -749,10 +749,10 @@ def test_next_promote_pending_then_done(runner, seq_jsonl, tmp_path):
     (d / "log.md").write_text("## Summary\n")
     (d / "report.md").write_text("r")
     out = _next(runner)
-    assert out["stage"] == "promote" and out["reason"] == "promote is running"
+    assert out["stage"] == "finish" and out["reason"] == "the final model is being trained and scored"
     _set_state(d, promote_pending=None, promoted=True)
     out = _next(runner)
-    assert out["stage"] == "setup" and out["reason"] == "this experiment is complete; start a new one"
+    assert out["stage"] == "choose-task" and out["reason"] == "this experiment is complete; start a new one"
 
 
 def test_new_bakeoff_validated_and_saved(runner, seq_jsonl, tmp_path):
@@ -788,7 +788,7 @@ def test_next_picks_highest_numeric_prefix_and_ignores_other_folders(runner, seq
     shutil.copytree(d, root / "1000-y")
     _splits(root / "1000-y")
     out = _next(runner)
-    assert out["experiment"] == "1000-y" and out["stage"] == "hparams"
+    assert out["experiment"] == "1000-y" and out["stage"] == "choose-loss"
 
 
 # ---- step by step: new --task, set data / model / goal ----
@@ -1107,3 +1107,98 @@ def test_set_losses_after_noise_opens_next_round(runner, seq_jsonl, tmp_path):
     assert _state_of(tmp_path).round_open is False
     assert runner.invoke(app, ["set", "losses", "001", "ce,focal"]).exit_code == 0
     assert _state_of(tmp_path).round_open is True
+
+
+# ---- next / steps follow the guided order ----
+
+
+def _statuses(runner, *args):
+    r = runner.invoke(app, ["steps", *args])
+    assert r.exit_code == 0, r.stdout
+    out = _out(r)
+    return out, {x["step"]: x["status"] for x in out["steps"]}
+
+
+def test_next_full_walk_fresh_experiment(runner, seq_jsonl, tmp_path):
+    _draft(runner)
+    seq_jsonl(_seq_rows())
+    d = _exp_dir(tmp_path)
+    assert _next(runner)["stage"] == "choose-data"
+    assert runner.invoke(app, ["set", "data", "001", "--train", "data.jsonl"]).exit_code == 0
+    assert _next(runner)["stage"] == "choose-model"
+    assert runner.invoke(app, ["set", "model", "001", "tiny-bert"]).exit_code == 0
+    assert _next(runner)["stage"] == "choose-goal"
+    assert runner.invoke(app, ["set", "goal", "001", "--metric", "macro_f1"]).exit_code == 0
+    assert _next(runner)["stage"] == "check-data"
+    assert runner.invoke(app, ["check-data", "001"]).exit_code == 0
+    assert _next(runner)["stage"] == "choose-loss"
+    assert runner.invoke(app, ["set", "losses", "001", "focal"]).exit_code == 0
+    assert _next(runner)["stage"] == "choose-hyperparameters"
+    _space(d)
+    out = _next(runner)
+    assert out["stage"] == "choose-learning-rate" and out["reason"] == "learning speed not chosen yet"
+    assert runner.invoke(app, ["set", "learning-rate", "001", "scan"]).exit_code == 0
+    out = _next(runner)
+    assert out["stage"] == "choose-learning-rate" and out["reason"] == "learning-rate scan not finished"
+    _set_state(d, lr_scan_best=1e-4)
+    assert _next(runner)["stage"] == "choose-experiments"
+    _set_state(d, budget_chosen=True)
+    assert _next(runner)["stage"] == "start-experiment"
+    _set_state(d, sigma_obj=0.01, round=1)
+    out = _next(runner)
+    assert out["stage"] == "start-experiment" and out["alternatives"][0]["stage"] == "status"
+
+
+def test_next_round_two_skips_choose_loss_when_round_open(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, sigma_obj=0.01, round=1)
+    (d / "log.md").write_text("## Summary\n")
+    (d / "report.md").write_text("r")
+    assert _next(runner)["stage"] == "finish"
+    assert runner.invoke(app, ["set", "losses", "001", "focal"]).exit_code == 0
+    assert _state_of(tmp_path).round_open is True
+    assert _next(runner)["stage"] == "choose-hyperparameters"
+    _set_state(d, round_open=False)
+    assert _next(runner)["stage"] == "finish"
+
+
+def test_next_old_one_shot_experiment_after_noise(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, sigma_obj=0.01, round=1)  # no lr_choice, no budget_chosen
+    out = _next(runner)
+    assert out["stage"] == "start-experiment" and "still running" in out["reason"]
+
+
+def test_steps_statuses_at_three_points(runner, seq_jsonl, tmp_path):
+    out, st = _statuses(runner)
+    assert out["experiment"] is None and out["next"]["stage"] == "choose-task"
+    assert st["start"] == "to do" and st["choose-task"] == "next" and st["status"] == "optional"
+    assert st["compare-models"] == "optional" and st["finish"] == "to do"
+    assert [x.get("number") for x in out["steps"]][:3] == [None, 1, 2] and out["steps"][-1]["number"] == 14
+
+    _draft(runner)
+    seq_jsonl(_seq_rows())
+    assert runner.invoke(app, ["set", "data", "001", "--train", "data.jsonl"]).exit_code == 0
+    assert runner.invoke(app, ["set", "model", "001", "tiny-bert"]).exit_code == 0
+    out, st = _statuses(runner, "001")
+    assert st["start"] == "done" and st["choose-task"] == "done" and st["choose-data"] == "done"
+    assert st["choose-goal"] == "next" and st["check-data"] == "to do"
+    assert st["compare-models"] == "skipped"
+    assert runner.invoke(app, ["set", "goal", "001", "--metric", "macro_f1"]).exit_code == 0
+
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, sigma_obj=0.01, round=1, promoted=True)
+    (d / "log.md").write_text("## Summary\n")
+    (d / "report.md").write_text("r")
+    out, st = _statuses(runner)
+    assert out["next"]["stage"] == "choose-task"
+    assert all(v == "done" for k, v in st.items() if k not in ("status", "compare-models"))
+    assert st["status"] == "optional"

@@ -590,7 +590,24 @@ def _token_misses(val: list[dict], preds: list[list[str]], k: int) -> list[dict]
 
 
 # ---- next ----
-_MORE_ROUND = {"stage": "hparams", "reason": "open more settings for another research round"}
+STEPS = [
+    {"step": "start", "title": "Start here", "what": "See the plan and every step in plain words"},
+    {"step": "choose-task", "title": "Choose the task", "what": "Say what kind of problem the model should learn to solve"},
+    {"step": "choose-data", "title": "Choose the data", "what": "Point to the examples the model will learn from"},
+    {"step": "choose-model", "title": "Choose the model", "what": "Pick the model to start from, and optionally others to compare it with"},
+    {"step": "choose-goal", "title": "Choose the goal", "what": "Say what counts as a good result and how it is scored"},
+    {"step": "check-data", "title": "Check the data", "what": "Look the data over for problems, then set aside examples to test with"},
+    {"step": "compare-models", "title": "Compare models", "what": "Try the models you picked side by side and keep the best one"},
+    {"step": "choose-loss", "title": "Choose the loss", "what": "Pick which ways of measuring mistakes training may try"},
+    {"step": "choose-hyperparameters", "title": "Choose the settings", "what": "Pick which training settings research may change"},
+    {"step": "choose-learning-rate", "title": "Choose the learning speed", "what": "Use the model's usual learning speed, or run a short test to find a better one"},
+    {"step": "choose-experiments", "title": "Choose how much to try", "what": "Decide how many experiments to run and how long they may take"},
+    {"step": "start-experiment", "title": "Run the experiments", "what": "Measure the starting point, then let research try improvements"},
+    {"step": "status", "title": "Check progress", "what": "See how the experiments are going at any time"},
+    {"step": "report", "title": "Read the report", "what": "See what was tried and what worked best"},
+    {"step": "finish", "title": "Finish", "what": "Train and score the final model, then wrap up"},
+]
+_MORE_ROUND = {"stage": "choose-loss", "reason": "try other losses or settings in another round"}
 
 
 def _research_finished(exp_dir: Path, n: int) -> bool:
@@ -604,36 +621,86 @@ def _research_finished(exp_dir: Path, n: int) -> bool:
     return False
 
 
+def _latest_exp(root: Path) -> Path | None:
+    exp_root = Path(root) / "experiments"
+    numbered = [(int(m.group(1)), d) for d in exp_root.iterdir()
+                if d.is_dir() and (m := re.match(r"(\d+)-", d.name))] if exp_root.is_dir() else []
+    return max(numbered, key=lambda nd: nd[0])[1] if numbered else None
+
+
 def next_stage(root: Path, exp_dir: Path | None) -> dict:
-    """Which stage comes next, from the experiment's files and state. First unmet condition wins."""
+    """Which step comes next, from the experiment's files and state. First unmet condition wins."""
     if exp_dir is None:
-        exp_root = Path(root) / "experiments"
-        numbered = [(int(m.group(1)), d) for d in exp_root.iterdir()
-                    if d.is_dir() and (m := re.match(r"(\d+)-", d.name))] if exp_root.is_dir() else []
-        if not numbered:
-            return {"experiment": None, "stage": "setup", "reason": "no experiment yet", "alternatives": []}
-        exp_dir = max(numbered, key=lambda nd: nd[0])[1]
+        exp_dir = _latest_exp(root)
+        if exp_dir is None:
+            return {"experiment": None, "stage": "choose-task", "reason": "no experiment yet", "alternatives": []}
     exp_dir = Path(exp_dir)
     cfg, space, state = ex.load(exp_dir)
 
     def out(stage: str, reason: str, alternatives: list[dict] | None = None) -> dict:
         return {"experiment": exp_dir.name, "stage": stage, "reason": reason, "alternatives": alternatives or []}
 
-    if ex.missing_setup(cfg) or not (exp_dir / "splits" / "train.jsonl").is_file():
-        return out("check", "data not checked and split yet")
+    if (missing := ex.missing_setup(cfg)) is not None:
+        return out(missing, "this question is not answered yet")
+    if not (exp_dir / "splits" / "train.jsonl").is_file():
+        return out("check-data", "data not checked and split yet")
     if cfg.bakeoff and not state.model_locked:
-        return out("bakeoff", "a bake-off was requested and no model is chosen yet")
-    if not (exp_dir / ex.SPACE_FILE).is_file():
-        return out("hparams", "no search space committed yet")
+        return out("compare-models", "a comparison was requested and no model is chosen yet")
+    if not (exp_dir / ex.SPACE_FILE).is_file() or state.round_open:
+        if state.chosen_losses is None:
+            return out("choose-loss", "which losses research may try is not chosen yet")
+        return out("choose-hyperparameters", "no search space committed yet")
     if state.sigma_obj is None:
-        return out("baseline", "noise floor not measured yet")
+        if state.lr_choice is None:
+            return out("choose-learning-rate", "learning speed not chosen yet")
+        if state.lr_choice == "scan" and state.lr_scan_best is None:
+            return out("choose-learning-rate", "learning-rate scan not finished")
+        if not state.budget_chosen:
+            return out("choose-experiments", "experiment budget not chosen yet")
+        return out("start-experiment", "noise floor not measured yet")
     if not _research_finished(exp_dir, state.round):
-        return out("research", f"research round {state.round} is not finished")
+        return out("start-experiment", f"research round {state.round} is still running",
+                   [{"stage": "status", "reason": "see how the experiments are going"}])
     report, log = exp_dir / "report.md", exp_dir / "log.md"
     if not report.is_file() or report.stat().st_mtime < log.stat().st_mtime:
-        return out("analyze", "results not analyzed yet", [dict(_MORE_ROUND)])
+        return out("report", "results not reported yet", [dict(_MORE_ROUND)])
     if state.promote_pending:
-        return out("promote", "promote is running")
+        return out("finish", "the final model is being trained and scored")
     if not state.promoted:
-        return out("promote", "final model not trained and scored yet", [dict(_MORE_ROUND)])
-    return out("setup", "this experiment is complete; start a new one")
+        return out("finish", "final model not trained and scored yet", [dict(_MORE_ROUND)])
+    return out("choose-task", "this experiment is complete; start a new one")
+
+
+def steps_overview(root: Path, exp_dir: Path | None) -> dict:
+    """Every step with its status, plus what `next` says."""
+    nxt = next_stage(root, exp_dir)
+    name = nxt["experiment"]
+    cfg = None
+    if name is not None:
+        cfg = ex.load(Path(root) / "experiments" / name)[0]
+    complete = name is not None and nxt["stage"] == "choose-task"
+    order = [s["step"] for s in STEPS]
+    cur = order.index(nxt["stage"]) if not complete else len(order)
+    rows = []
+    number = 0
+    for i, s in enumerate(STEPS):
+        step = s["step"]
+        row = {"step": step, "title": s["title"], "what": s["what"]}
+        if step != "start":
+            number += 1
+            row["number"] = number
+        if step == "start":
+            status = "done" if name is not None else "to do"
+        elif step == "status":
+            status = "optional"
+        elif step == "compare-models" and not (cfg is not None and cfg.bakeoff) and step != nxt["stage"]:
+            status = "skipped" if cfg is not None and cfg.model is not None else "optional"
+        elif i < cur:
+            status = "done"
+        elif i == cur:
+            status = "next"
+        else:
+            status = "to do"
+        row["status"] = status
+        rows.append(row)
+    return {"experiment": name, "steps": rows, "next": nxt}
