@@ -6,13 +6,21 @@ pick one, fix it for the experiment, and write `bakeoff.md`.
 ## Before you start
 
 `experiments/<exp>/data-report.md` must exist. If it does not, the data check has not run:
+
 {{GOTO_NEXT}}
 
 Otherwise run `finetune-kit next <exp>`. It names `bakeoff` as the stage only when a bake-off
 was requested at setup (the `bakeoff` field of `experiment.yaml`) and no model is chosen yet.
 If it names another stage, the bake-off is skipped or already done for this experiment. Say so
-and use the hand-off in the Finish section, unless the user now asks for a bake-off; then ask
-which 2–3 models and go on.
+and use the hand-off in the Finish section, unless the user now asks for a bake-off.
+
+- **Late bake-off.** If the user opts in now although none was requested at setup, ask which
+  2–3 models and run it through to `finetune-kit bakeoff choose <exp> <model>` and `bakeoff.md`,
+  so `finetune-kit next` agrees at Finish. If the bake-off is abandoned midway, tell the user it
+  is incomplete and that `finetune-kit next` will move on to `hparams` without it.
+- **Requested at setup, user declines.** If `next` names `bakeoff` and the user declines, say the
+  bake-off was requested at setup and the experiment cannot move past it until a model is chosen
+  (`finetune-kit bakeoff choose <exp> <model>` with the setup model counts as choosing).
 
 ## How to work in this stage
 

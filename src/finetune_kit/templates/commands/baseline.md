@@ -7,6 +7,7 @@ Write `baseline.md`.
 ## Before you start
 
 `experiments/<exp>/search-space.md` must exist. If it does not:
+
 {{GOTO_NEXT}}
 
 ## How to work in this stage

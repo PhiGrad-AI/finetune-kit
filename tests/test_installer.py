@@ -362,7 +362,19 @@ def test_setup_passes_bakeoff_to_new():
 
 def test_bakeoff_reads_the_cli_not_prose():
     text = installer.render("bakeoff", "codex")
-    assert "finetune-kit next" in text and "`bakeoff`" in text
+    assert "the `bakeoff` field of `experiment.yaml`" in text
+    assert "Late bake-off" in text and "bakeoff choose <exp> <model>" in text
+    assert "prose" not in text and "experiment.md`. If the user did **not**" not in text
+
+
+def test_finish_says_what_to_do_on_no_and_requires_a_yes():
+    text = installer.render("check", "codex").split("## Finish", 1)[1]
+    assert "If the user says no, stop" in text
+    assert "Never start a stage the user has not agreed to" in text
+
+
+def test_goto_handles_a_missing_experiment():
+    assert "no argument" in installer.render("check", "codex").split("## How to work", 1)[0]
 
 
 def test_rules_forbid_skipping_a_stage():

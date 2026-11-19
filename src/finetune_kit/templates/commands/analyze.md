@@ -7,6 +7,7 @@ hurt, what to open next, and an error analysis of the best run's validation mist
 ## Before you start
 
 `experiments/<exp>/log.md` must exist. If it does not, the research stage has not run:
+
 {{GOTO_NEXT}}
 
 If `log.md` has no `## Summary` yet, research is
