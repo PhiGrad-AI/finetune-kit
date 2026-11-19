@@ -98,6 +98,7 @@ def run(
         with ex.state_lock(exp_dir):
             _verify(exp_dir)
             cfg, space, state = ex.load(exp_dir)
+            ex.require_setup(cfg)
             root = store.project_root(exp_dir)
             profile = store.profile_for(cfg, {}, root)
             warnings = store.version_warnings(cfg, profile)
@@ -175,6 +176,7 @@ def lr_scan(exp: str = typer.Argument(..., help="Experiment: number, name or pat
         with ex.state_lock(exp_dir):
             _verify(exp_dir)
             cfg, _, _ = ex.load(exp_dir)
+            ex.require_setup(cfg)
             noise = _requests(exp_dir, "noise", skip_failed=True)
             if noise:
                 raise ValueError(
@@ -216,6 +218,7 @@ def bakeoff(
             exp_dir = _exp(args[1])
             with ex.state_lock(exp_dir):
                 cfg, _, state = ex.load(exp_dir)
+                ex.require_setup(cfg)
                 if state.model_locked:
                     raise ValueError(f"model is locked ({cfg.model}); the noise floor or a choice already fixed it")
                 profile = store.profile_for(cfg, {"model": args[2]}, store.project_root(exp_dir))
@@ -240,11 +243,13 @@ def bakeoff(
             raise ValueError("usage: finetune-kit bakeoff EXP [--models a,b] | bakeoff choose EXP MODEL")
         exp_dir = _exp(args[0])
         cfg, _, state = ex.load(exp_dir)
+        ex.require_setup(cfg)
         if models is None:
             emit({"bakeoff": state.bakeoff, "pending": len(_requests(exp_dir, "bakeoff", pending_only=True))})
             return
         with ex.state_lock(exp_dir):
             cfg, _, state = ex.load(exp_dir)
+            ex.require_setup(cfg)
             if state.model_locked:
                 raise ValueError(f"model is locked ({cfg.model}); a bake-off is only possible before it is fixed")
             _verify(exp_dir)
@@ -357,13 +362,13 @@ def status(exp: Optional[str] = typer.Argument(None, help="Only show runs of thi
 def new(
     name: str = typer.Argument(..., help="Experiment name."),
     task: str = typer.Option(..., "--task", help="seq-cls | token-cls"),
-    model: str = typer.Option(..., "--model", help="Model profile key (see `models`)."),
+    model: Optional[str] = typer.Option(None, "--model", help="Model profile key (see `models`)."),
     train: Optional[str] = typer.Option(None, "--train", help="Train JSONL, CSV, TSV or Parquet."),
     source: Optional[str] = typer.Option(None, "--source", help="Hugging Face dataset: hf:<id>[:<config>]."),
     revision: Optional[str] = typer.Option(None, "--revision", help="Branch, tag or sha for --source (stored as a sha)."),
     val: Optional[str] = typer.Option(None, "--val", help="Val file (with --test)."),
     test: Optional[str] = typer.Option(None, "--test", help="Test file (goes to the vault)."),
-    metric: str = typer.Option(..., "--metric", help="Objective metric."),
+    metric: Optional[str] = typer.Option(None, "--metric", help="Objective metric."),
     metric_params: str = typer.Option("{}", "--metric-params", help="JSON object."),
     guardrail: Optional[str] = typer.Option(None, "--guardrail", help="Guardrail metric."),
     guardrail_params: str = typer.Option("{}", "--guardrail-params", help="JSON object."),
@@ -377,7 +382,8 @@ def new(
     columns: str = typer.Option("{}", "--columns", help='JSON object mapping text/label/id/tokens/tags/group_id to your column names.'),
     bakeoff: Optional[str] = typer.Option(None, "--bakeoff", help="2-3 model keys a,b[,c] to compare; the first is --model."),
 ) -> None:
-    """Create experiments/NNN-name with its config and recorded versions."""
+    """Create experiments/NNN-name. With only --task it is a draft: answer data, model and goal one at
+    a time with `set data|model|goal`. Giving --model, data and --metric together sets everything at once."""
     from finetune_kit import commands as cmd
 
     with _errors():
@@ -392,6 +398,66 @@ def new(
             bakeoff=[k.strip() for k in bakeoff.split(",")] if bakeoff is not None else None,
         )
     emit({"experiment": d.name, "path": str(d)})
+
+
+set_app = typer.Typer(add_completion=False, no_args_is_help=True, help="Answer one setup question of an experiment.")
+app.add_typer(set_app, name="set")
+
+
+@set_app.command("data")
+def set_data(
+    exp: str = typer.Argument(..., help="Experiment: number, name or path."),
+    train: Optional[str] = typer.Option(None, "--train", help="Train JSONL, CSV, TSV or Parquet."),
+    val: Optional[str] = typer.Option(None, "--val", help="Val file (with --test)."),
+    test: Optional[str] = typer.Option(None, "--test", help="Test file (goes to the vault)."),
+    source: Optional[str] = typer.Option(None, "--source", help="Hugging Face dataset: hf:<id>[:<config>]."),
+    revision: Optional[str] = typer.Option(None, "--revision", help="Branch, tag or sha for --source (stored as a sha)."),
+    columns: str = typer.Option("{}", "--columns", help="JSON object mapping text/label/id/tokens/tags/group_id to your column names."),
+) -> None:
+    """Choose the data. Refused once check-data has run."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        emit(cmd.set_data(
+            _exp(exp), train=train, val=val, test=test, source=source, revision=revision,
+            columns=cmd.parse_params(columns, "--columns"),
+        ))
+
+
+@set_app.command("model")
+def set_model(
+    exp: str = typer.Argument(..., help="Experiment: number, name or path."),
+    model: str = typer.Argument(..., help="Model profile key (see `models`)."),
+    compare: Optional[str] = typer.Option(None, "--compare", help="2-3 model keys a,b[,c] to bake off; the first is MODEL."),
+) -> None:
+    """Choose the model (and, with --compare, the models to bake off). Refused once check-data has run."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        keys = [k.strip() for k in compare.split(",") if k.strip()] if compare is not None else None
+        emit(cmd.set_model(_exp(exp), model, keys))
+
+
+@set_app.command("goal")
+def set_goal(
+    exp: str = typer.Argument(..., help="Experiment: number, name or path."),
+    metric: str = typer.Option(..., "--metric", help="Objective metric."),
+    metric_params: str = typer.Option("{}", "--metric-params", help="JSON object."),
+    guardrail: Optional[str] = typer.Option(None, "--guardrail", help="Guardrail metric."),
+    guardrail_params: str = typer.Option("{}", "--guardrail-params", help="JSON object."),
+    positive_class: Optional[str] = typer.Option(None, "--positive-class"),
+    custom_metric: Optional[str] = typer.Option(None, "--custom-metric", help="PATH:FUNC (seq-cls)."),
+    direction: Optional[str] = typer.Option(None, "--direction", help="max | min (custom metric)."),
+) -> None:
+    """Choose the goal: objective metric, optional guardrail and positive class. Needs the data first."""
+    from finetune_kit import commands as cmd
+
+    with _errors():
+        emit(cmd.set_goal(
+            _exp(exp), metric=metric, metric_params=cmd.parse_params(metric_params, "--metric-params"),
+            guardrail=guardrail, guardrail_params=cmd.parse_params(guardrail_params, "--guardrail-params"),
+            positive_class=positive_class, custom_metric=custom_metric, direction=direction,
+        ))
 
 
 @app.command("next")
@@ -492,6 +558,7 @@ def catalog(exp: str = typer.Argument(..., help="Experiment: number, name or pat
     with _errors():
         exp_dir = _exp(exp)
         cfg, _, _ = ex.load(exp_dir)
+        ex.require_setup(cfg)
         rp = exp_dir / "data-report.json"
         report = json.loads(rp.read_text()) if rp.is_file() else {}
         profile = store.profile_for(cfg, {}, store.project_root(exp_dir))
@@ -522,6 +589,7 @@ def space_commit(
                 "--losses is required: say which losses research may try (e.g. --losses ce or ce,focal)"
             )
         exp_dir = _exp(exp)
+        ex.require_setup(ex.load(exp_dir)[0])
         names = [t.strip() for t in tunable.split(",") if t.strip()]
         allowed = ["ce"] + [l for l in dict.fromkeys(l.strip() for l in losses.split(",")) if l and l != "ce"]
         if len(allowed) > 1 and "loss" not in names:

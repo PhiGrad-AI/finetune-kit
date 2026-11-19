@@ -65,9 +65,9 @@ class ExperimentConfig(BaseModel):
     uid: str = Field(default_factory=lambda: uuid.uuid4().hex)
     name: str
     task: Literal["seq-cls", "token-cls"]
-    model: str
-    data: DataPaths
-    objective: MetricRef
+    model: str | None = None  # model, data and objective stay unset while the experiment is a draft
+    data: DataPaths | None = None
+    objective: MetricRef | None = None
     guardrail: MetricRef | None = None
     positive_class: str | None = None
     custom_metric: CustomMetric | None = None
@@ -111,6 +111,36 @@ def _slug(name: str) -> str:
 
 def _dump_yaml(path: Path, model: BaseModel) -> None:
     path.write_text(yaml.safe_dump(model.model_dump(mode="json"), sort_keys=False))
+
+
+_SETUP_STEPS = (
+    ("data", "choose-data", "choose the data"),
+    ("model", "choose-model", "choose the model"),
+    ("objective", "choose-goal", "choose the goal"),
+)
+
+
+def missing_setup(cfg: ExperimentConfig) -> str | None:
+    """Step name of the first unanswered setup question (data, model, goal), or None when complete."""
+    for field, step, _ in _SETUP_STEPS:
+        if getattr(cfg, field) is None:
+            return step
+    return None
+
+
+def require_setup(cfg: ExperimentConfig) -> None:
+    for field, step, what in _SETUP_STEPS:
+        if getattr(cfg, field) is None:
+            raise ValueError(f"{what} first (step: {step})")
+
+
+def save_config(exp_dir: Path, cfg: ExperimentConfig) -> None:
+    """Atomic rewrite of experiment.yaml (temp file + os.replace)."""
+    path = Path(exp_dir) / "experiment.yaml"
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".experiment.")
+    with os.fdopen(fd, "w") as f:
+        f.write(yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False))
+    os.replace(tmp, path)
 
 
 def new_experiment(root: Path, name: str, cfg: ExperimentConfig) -> Path:

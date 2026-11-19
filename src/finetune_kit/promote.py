@@ -73,6 +73,7 @@ def promote(exp_dir: Path, run_id: str, seeds: int = 3, sync: bool = False) -> d
     from finetune_kit import queue
 
     exp_dir = Path(exp_dir).resolve()
+    ex.require_setup(ex.load(exp_dir)[0])
     rid = _request(exp_dir, run_id, seeds)
     if not sync:
         position = queue.enqueue(exp_dir, rid)

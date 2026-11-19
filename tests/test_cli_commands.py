@@ -789,3 +789,120 @@ def test_next_picks_highest_numeric_prefix_and_ignores_other_folders(runner, seq
     _splits(root / "1000-y")
     out = _next(runner)
     assert out["experiment"] == "1000-y" and out["stage"] == "hparams"
+
+
+# ---- step by step: new --task, set data / model / goal ----
+
+
+def _draft(runner, name="gate"):
+    return runner.invoke(app, ["new", name, "--task", "seq-cls"])
+
+
+def _cfg_of(tmp_path):
+    return ex.load(_exp_dir(tmp_path))[0]
+
+
+def test_new_task_only_writes_a_draft(runner, tmp_path):
+    r = _draft(runner)
+    assert r.exit_code == 0, r.stdout
+    assert _out(r)["experiment"] == "001-gate"
+    cfg = _cfg_of(tmp_path)
+    assert cfg.model is None and cfg.data is None and cfg.objective is None
+
+
+def test_set_data_model_goal_happy_path(runner, seq_jsonl, tmp_path):
+    _draft(runner)
+    seq_jsonl(_seq_rows())
+    r = runner.invoke(app, ["set", "data", "001", "--train", "data.jsonl"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r)["data"]["train"] == "data.jsonl"
+    r = runner.invoke(app, ["set", "model", "001", "tiny-bert"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r)["model"] == "tiny-bert"
+    r = runner.invoke(app, ["set", "goal", "001", "--metric", "macro_f1", "--guardrail", "accuracy"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r)["objective"]["metric"] == "macro_f1"
+    cfg = _cfg_of(tmp_path)
+    assert cfg.data.train == "data.jsonl" and cfg.model == "tiny-bert"
+    assert cfg.objective.metric == "macro_f1" and cfg.guardrail.metric == "accuracy"
+    assert cfg.versions["model_revision"] == "main" and ex.missing_setup(cfg) is None
+
+
+def test_set_model_with_compare_stores_bakeoff(runner, tmp_path):
+    _draft(runner)
+    r = runner.invoke(app, ["set", "model", "001", "tiny-bert", "--compare", "tiny-bert,tiny-roberta"])
+    assert r.exit_code == 0, r.stdout
+    assert _cfg_of(tmp_path).bakeoff == ["tiny-bert", "tiny-roberta"]
+
+
+def test_set_validation_errors_write_nothing(runner, seq_jsonl, tmp_path):
+    _draft(runner)
+    before = (_exp_dir(tmp_path) / "experiment.yaml").read_text()
+    r = runner.invoke(app, ["set", "data", "001", "--train", "missing.jsonl"])
+    assert r.exit_code == 2 and "not found" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "data", "001"])
+    assert r.exit_code == 2 and "--train or --source" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "model", "001", "nope"])
+    assert r.exit_code == 2 and "unknown model" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "goal", "001", "--metric", "macro_f1"])
+    assert r.exit_code == 2 and _out(r)["error"] == "choose the data first (step: choose-data)"
+    seq_jsonl(_seq_rows(30, ("a", "b", "c")))
+    assert runner.invoke(app, ["set", "data", "001", "--train", "data.jsonl"]).exit_code == 0
+    mid = (_exp_dir(tmp_path) / "experiment.yaml").read_text()
+    r = runner.invoke(app, ["set", "goal", "001", "--metric", "entity_f1"])
+    assert r.exit_code == 2 and "not valid for seq-cls" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "goal", "001", "--metric", "pr_auc"])
+    assert r.exit_code == 2 and "--positive-class" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "goal", "001", "--metric", "pr_auc", "--positive-class", "zzz"])
+    assert r.exit_code == 2 and "not a train label" in _out(r)["error"]
+    assert (_exp_dir(tmp_path) / "experiment.yaml").read_text() == mid != before
+    assert _cfg_of(tmp_path).objective is None and _cfg_of(tmp_path).model is None
+
+
+def test_set_refused_after_check(runner, seq_jsonl, tmp_path):
+    _checked(runner, seq_jsonl, tmp_path)
+    for args, what in (
+        (["data", "001", "--train", "data.jsonl"], "data"),
+        (["model", "001", "tiny-bert"], "model"),
+        (["goal", "001", "--metric", "macro_f1"], "goal"),
+    ):
+        r = runner.invoke(app, ["set", *args])
+        assert r.exit_code == 2, r.stdout
+        assert _out(r)["error"] == f"{what} is checked and locked; start a new experiment to change it"
+
+
+def test_check_data_on_draft_refused_and_writes_nothing(runner, tmp_path):
+    _draft(runner)
+    d = _exp_dir(tmp_path)
+    r = runner.invoke(app, ["check-data", "001"])
+    assert r.exit_code == 2
+    assert _out(r)["error"] == "choose the data first (step: choose-data)"
+    assert not (d / "splits").exists() and not (d / "data-report.json").exists()
+
+
+@pytest.mark.parametrize("cmdline", [
+    ["catalog", "001"], ["lr-scan", "001"], ["run", "001"], ["compare", "001"], ["report", "001"],
+    ["misses", "001", "r001"], ["promote", "001", "r001"], ["bakeoff", "001", "--models", "a,b"],
+    ["space", "commit", "001", "--tunable", "lr", "--losses", "ce"],
+])
+def test_commands_needing_setup_refuse_a_draft(runner, cmdline):
+    _draft(runner)
+    r = runner.invoke(app, cmdline)
+    assert r.exit_code == 2, r.stdout
+    assert _out(r)["error"].endswith("first (step: choose-data)")
+
+
+def test_next_does_not_crash_on_draft(runner):
+    _draft(runner)
+    r = runner.invoke(app, ["next", "001"])
+    assert r.exit_code == 0, r.stdout
+
+
+def test_one_shot_new_unchanged(runner, seq_jsonl, tmp_path):
+    r = _new(runner, seq_jsonl)
+    assert r.exit_code == 0, r.stdout
+    cfg = _cfg_of(tmp_path)
+    assert ex.missing_setup(cfg) is None and cfg.objective.metric == "macro_f1"
+    # task alone with partial one-shot options is not a silent draft
+    r = runner.invoke(app, ["new", "x", "--task", "seq-cls", "--model", "tiny-bert"])
+    assert r.exit_code == 2

@@ -36,31 +36,41 @@ def _metric(cfg: ex.ExperimentConfig, ref: ex.MetricRef, root: Path) -> metrics.
     return metrics.get(ref.metric)
 
 
-# ---- new ----
+# ---- new, set data / model / goal ----
+# One-shot `new` and the step-by-step `set` commands share these validators (nothing is written until all pass).
 
 
-def setup_experiment(
-    root: Path, name: str, *, task: str, model: str, train: str | None = None,
-    val: str | None = None, test: str | None = None, source: str | None = None,
-    revision: str | None = None, metric: str, metric_params: dict, guardrail: str | None, guardrail_params: dict,
-    positive_class: str | None, seeds: int, max_runs: int, max_hours: float, subset: int | None,
-    custom_metric: str | None, direction: str | None, columns: dict | None = None,
-    bakeoff: list[str] | None = None,
-) -> Path:
-    from finetune_kit.profiles import load_profiles
-
-    root = Path(root)
-    if not ex._slug(name):
-        raise ValueError(f"experiment name {name!r} has no letters or digits")
-    if task not in ("seq-cls", "token-cls"):
-        raise ValueError(f"--task must be seq-cls or token-cls, not {task!r}")
-    if seeds < 2:
-        raise ValueError("--seeds must be at least 2: the noise floor needs a standard deviation")
+def validate_data(
+    root: Path, task: str, *, train: str | None, val: str | None, test: str | None,
+    source: str | None, revision: str | None, columns: dict | None,
+) -> tuple[ex.DataPaths, list[str] | None]:
+    """Check a data choice the way check-data will load it; returns the config and seq-cls train labels."""
     ex.check_data_choice(train, source, val, test)
     if (val is None) != (test is None):
         raise ValueError("give both --val and --test, or neither (the kit then splits --train)")
     if revision is not None and not source:
         raise ValueError("--revision only applies with --source")
+    if source:
+        sources.parse_hf(source)  # one-line error for a malformed spec
+    for label, p in (("train", train), ("val", val), ("test", test)):
+        if p is not None and not _resolve(root, p).is_file():
+            raise FileNotFoundError(f"--{label} file not found: {p}")
+    pinned = sources.pin_revision(source, revision) if source else None
+    data_cfg = ex.DataPaths(
+        train=train, val=val, test=test, source=source, revision=pinned, columns=columns or {}
+    )
+    # Load every split the way check-data will, so mapping and row errors surface before anything is written.
+    got = sources.resolve_source(data_cfg, root, task, 0.1)
+    if task != "seq-cls":
+        return data_cfg, None
+    data.check_label_column(got.train + got.val + got.test)
+    train_rows = got.train if source else sources.load_train(data_cfg, root, task)
+    return data_cfg, data.label_map(train_rows, task)
+
+
+def validate_model(root: Path, task: str, model: str, bakeoff: list[str] | None):
+    from finetune_kit.profiles import load_profiles
+
     profiles = load_profiles(root)
     if model not in profiles:
         raise ValueError(f"unknown model {model!r}; see `finetune-kit models`")
@@ -71,12 +81,28 @@ def setup_experiment(
             k not in profiles or task not in profiles[k].tasks for k in bakeoff
         ):
             raise ValueError(f"--bakeoff needs 2-3 models for {task}, the first being --model")
-    if source:
-        sources.parse_hf(source)  # one-line error for a malformed spec
-    for label, p in (("train", train), ("val", val), ("test", test)):
-        if p is not None and not _resolve(root, p).is_file():
-            raise FileNotFoundError(f"--{label} file not found: {p}")
+    return profiles[model]
 
+
+def _check_labels(task: str, labels: list[str] | None, positive_class: str | None, resolved: list) -> None:
+    if task != "seq-cls":
+        if positive_class is not None:
+            raise ValueError("--positive-class applies to seq-cls only")
+        return
+    if positive_class is not None and positive_class not in labels:
+        raise ValueError(f"--positive-class {positive_class!r} is not a train label {labels}")
+    if positive_class is None and len(labels) > 2 and any(m.needs_positive for m in resolved):
+        names = [m.name for m in resolved if m.needs_positive]
+        raise ValueError(
+            f"metric {', '.join(names)} needs --positive-class: train has {len(labels)} classes {labels}"
+        )
+
+
+def validate_goal(
+    root: Path, task: str, *, metric: str, guardrail: str | None, custom_metric: str | None,
+    direction: str | None, positive_class: str | None, labels: list[str] | None,
+) -> ex.CustomMetric | None:
+    """Check the objective, guardrail, custom metric and positive class; returns the custom metric config."""
     cm = None
     if custom_metric is not None:
         path, sep, func = custom_metric.rpartition(":")
@@ -104,39 +130,130 @@ def setup_experiment(
         resolved.append(m)
     if cm is not None and cm.func not in (metric, guardrail):
         raise ValueError(f"--metric or --guardrail must be the custom metric {cm.func!r}")
+    _check_labels(task, labels, positive_class, resolved)
+    return cm
 
-    pinned = sources.pin_revision(source, revision) if source else None
-    cols = columns or {}
-    data_cfg = ex.DataPaths(
-        train=train, val=val, test=test, source=source, revision=pinned, columns=cols
+
+def setup_experiment(
+    root: Path, name: str, *, task: str, model: str | None = None, train: str | None = None,
+    val: str | None = None, test: str | None = None, source: str | None = None,
+    revision: str | None = None, metric: str | None = None, metric_params: dict | None = None,
+    guardrail: str | None = None, guardrail_params: dict | None = None,
+    positive_class: str | None = None, seeds: int = 3, max_runs: int = 40, max_hours: float = 24,
+    subset: int | None = None, custom_metric: str | None = None, direction: str | None = None,
+    columns: dict | None = None, bakeoff: list[str] | None = None,
+) -> Path:
+    """Create an experiment. With only `task` it is a draft; data, model and goal come later via `set_*`."""
+    root = Path(root)
+    if not ex._slug(name):
+        raise ValueError(f"experiment name {name!r} has no letters or digits")
+    if task not in ("seq-cls", "token-cls"):
+        raise ValueError(f"--task must be seq-cls or token-cls, not {task!r}")
+    if seeds < 2:
+        raise ValueError("--seeds must be at least 2: the noise floor needs a standard deviation")
+    budget = ex.Budget(max_runs=max_runs, max_hours=max_hours)
+    if model is None and train is None and source is None and metric is None:
+        if val or test or revision or guardrail or positive_class or custom_metric or direction or bakeoff or columns:
+            raise ValueError("those options need --model, --train or --source, and --metric (or use `set`)")
+        cfg = ex.ExperimentConfig(name=name, task=task, seeds=seeds, budget=budget, research_subset=subset)
+        return ex.new_experiment(root, name, cfg)
+
+    data_cfg, labels = validate_data(
+        root, task, train=train, val=val, test=test, source=source, revision=revision, columns=columns,
     )
-    # Load every split the way check-data will, so mapping and row errors surface before anything is written.
-    got = sources.resolve_source(data_cfg, root, task, 0.1)
-    if task == "seq-cls":
-        data.check_label_column(got.train + got.val + got.test)
-        train_rows = got.train if source else sources.load_train(data_cfg, root, task)
-        labels = data.label_map(train_rows, task)
-        if positive_class is not None and positive_class not in labels:
-            raise ValueError(f"--positive-class {positive_class!r} is not a train label {labels}")
-        if positive_class is None and len(labels) > 2 and any(m.needs_positive for m in resolved):
-            names = [m.name for m in resolved if m.needs_positive]
-            raise ValueError(
-                f"metric {', '.join(names)} needs --positive-class: train has {len(labels)} classes {labels}"
-            )
-    elif positive_class is not None:
-        raise ValueError("--positive-class applies to seq-cls only")
-
-    profile = profiles[model]
+    if model is None:
+        raise ValueError("give --model")
+    profile = validate_model(root, task, model, bakeoff)
+    if metric is None:
+        raise ValueError("give --metric")
+    cm = validate_goal(
+        root, task, metric=metric, guardrail=guardrail, custom_metric=custom_metric, direction=direction,
+        positive_class=positive_class, labels=labels,
+    )
     cfg = ex.ExperimentConfig(
         name=name, task=task, model=model,
         data=data_cfg,
-        objective=ex.MetricRef(metric=metric, params=metric_params),
-        guardrail=ex.MetricRef(metric=guardrail, params=guardrail_params) if guardrail else None,
+        objective=ex.MetricRef(metric=metric, params=metric_params or {}),
+        guardrail=ex.MetricRef(metric=guardrail, params=guardrail_params or {}) if guardrail else None,
         positive_class=positive_class, custom_metric=cm, seeds=seeds,
-        budget=ex.Budget(max_runs=max_runs, max_hours=max_hours), research_subset=subset,
+        budget=budget, research_subset=subset,
         versions=store.current_versions(profile), bakeoff=bakeoff,
     )
     return ex.new_experiment(root, name, cfg)
+
+
+def _edit_setup(exp_dir: Path, what: str, change) -> ex.ExperimentConfig:
+    """Under the state lock: refuse once the data is checked, let `change(cfg, root)` validate and
+    return the new config, then rewrite experiment.yaml atomically."""
+    exp_dir = Path(exp_dir)
+    with ex.state_lock(exp_dir):
+        if (exp_dir / "splits" / "train.jsonl").is_file():
+            raise ValueError(f"{what} is checked and locked; start a new experiment to change it")
+        cfg, _, _ = ex.load(exp_dir)
+        cfg = change(cfg, store.project_root(exp_dir))
+        ex.save_config(exp_dir, cfg)
+    return cfg
+
+
+def _train_labels(cfg: ex.ExperimentConfig, root: Path) -> list[str] | None:
+    if cfg.task != "seq-cls":
+        return None
+    return data.label_map(sources.load_train(cfg.data, root, cfg.task), cfg.task)
+
+
+def set_data(
+    exp_dir: Path, *, train: str | None = None, val: str | None = None, test: str | None = None,
+    source: str | None = None, revision: str | None = None, columns: dict | None = None,
+) -> dict:
+    def change(cfg, root):
+        data_cfg, labels = validate_data(
+            root, cfg.task, train=train, val=val, test=test, source=source, revision=revision, columns=columns,
+        )
+        if cfg.objective is not None:  # the goal was answered first: its labels must still hold
+            refs = [r for r in (cfg.objective, cfg.guardrail) if r is not None]
+            _check_labels(cfg.task, labels, cfg.positive_class, [_metric(cfg, r, root) for r in refs])
+        return cfg.model_copy(update={"data": data_cfg})
+
+    return {"data": _edit_setup(exp_dir, "data", change).data.model_dump()}
+
+
+def set_model(exp_dir: Path, model: str, compare: list[str] | None = None) -> dict:
+    def change(cfg, root):
+        bakeoff = list(dict.fromkeys([model, *compare])) if compare else None
+        profile = validate_model(root, cfg.task, model, bakeoff)
+        return cfg.model_copy(update={
+            "model": model, "bakeoff": bakeoff, "versions": store.current_versions(profile),
+        })
+
+    cfg = _edit_setup(exp_dir, "model", change)
+    return {"model": cfg.model, "bakeoff": cfg.bakeoff}
+
+
+def set_goal(
+    exp_dir: Path, *, metric: str, metric_params: dict | None = None, guardrail: str | None = None,
+    guardrail_params: dict | None = None, positive_class: str | None = None,
+    custom_metric: str | None = None, direction: str | None = None,
+) -> dict:
+    def change(cfg, root):
+        if cfg.data is None:
+            raise ValueError("choose the data first (step: choose-data)")
+        cm = validate_goal(
+            root, cfg.task, metric=metric, guardrail=guardrail, custom_metric=custom_metric,
+            direction=direction, positive_class=positive_class, labels=_train_labels(cfg, root),
+        )
+        return cfg.model_copy(update={
+            "objective": ex.MetricRef(metric=metric, params=metric_params or {}),
+            "guardrail": ex.MetricRef(metric=guardrail, params=guardrail_params or {}) if guardrail else None,
+            "positive_class": positive_class, "custom_metric": cm,
+        })
+
+    cfg = _edit_setup(exp_dir, "goal", change)
+    return {
+        "objective": cfg.objective.model_dump(),
+        "guardrail": cfg.guardrail.model_dump() if cfg.guardrail else None,
+        "positive_class": cfg.positive_class,
+        "custom_metric": cfg.custom_metric.model_dump() if cfg.custom_metric else None,
+    }
 
 
 # ---- check-data ----
@@ -183,6 +300,7 @@ def check_data(exp_dir: Path, *, resplit: bool = False, val_frac: float = 0.1) -
     exp_dir = Path(exp_dir)
     root = store.project_root(exp_dir)
     cfg, _, _ = ex.load(exp_dir)
+    ex.require_setup(cfg)
     splits = exp_dir / "splits"
     if not 0 < val_frac < 0.9:
         raise ValueError("--val-frac must be between 0 and 0.9")
@@ -268,6 +386,7 @@ def result_rows(exp_dir: Path) -> list[dict]:
 def compare(exp_dir: Path) -> dict:
     exp_dir = Path(exp_dir)
     cfg, _, state = ex.load(exp_dir)
+    ex.require_setup(cfg)
     _, metric_delta = store.metric_info(cfg, cfg.objective)
     min_delta = cfg.min_delta if cfg.min_delta is not None else metric_delta
     sig = state.sigma_obj
@@ -312,6 +431,7 @@ def misses(exp_dir: Path, run_id: str, k: int = 20) -> dict:
     exp_dir = Path(exp_dir)
     root = store.project_root(exp_dir)
     cfg, _, _ = ex.load(exp_dir)
+    ex.require_setup(cfg)
     seed = _best_seed(exp_dir, cfg, run_id)
     seed_dir = store.run_dir(exp_dir, run_id) / f"seed_{seed}"
     val = data.load_rows(exp_dir / "splits" / "val.jsonl", cfg.task)  # never the vault
@@ -416,7 +536,7 @@ def next_stage(root: Path, exp_dir: Path | None) -> dict:
     def out(stage: str, reason: str, alternatives: list[dict] | None = None) -> dict:
         return {"experiment": exp_dir.name, "stage": stage, "reason": reason, "alternatives": alternatives or []}
 
-    if not (exp_dir / "splits" / "train.jsonl").is_file():
+    if ex.missing_setup(cfg) or not (exp_dir / "splits" / "train.jsonl").is_file():
         return out("check", "data not checked and split yet")
     if cfg.bakeoff and not state.model_locked:
         return out("bakeoff", "a bake-off was requested and no model is chosen yet")
