@@ -62,6 +62,17 @@ How a stage is invoked per agent (after `init`):
 | Codex | `$finetune-kit-setup`, `$finetune-kit-check`, ... | `.agents/skills/` |
 | Cursor | `/finetune-kit.setup`, `/finetune-kit.check`, ... | `.cursor/commands/` |
 
+Each stage ends by running `finetune-kit next`, showing the next stage with its reason and
+command, and asking whether to continue in the same conversation. The agent never starts a stage
+without your yes and never skips one; if you say no, run the command whenever you like. A stage
+whose prerequisite is missing hands off the same way, to the stage that comes first.
+
+`finetune-kit next [EXP]` prints `{"experiment", "stage", "reason", "alternatives": [{"stage",
+"reason"}]}`, computed from the experiment's files, so it works without an agent too. After
+`promote` it returns `setup` (the experiment is done; start a new one). `finetune-kit new
+--bakeoff a,b[,c]` records the bake-off candidates (the first must equal `--model`); `next` then
+names `bakeoff` until a model is chosen, and skips it otherwise.
+
 Each stage checks that the previous stage's file exists and refuses otherwise. Re-running
 `hparams` then `research` opens a new round after a plateau; the best config, noise floor and
 budget carry over. If the agent session ends, re-run `research`: all state is in files and the

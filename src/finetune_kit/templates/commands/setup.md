@@ -88,6 +88,7 @@ experiment. Then ask, in this order:
    and its `notes` if any. Offer a fourth option, **"bake-off"**: the user picks 2–3 candidates
    and a later stage trains each one and picks the best. If they choose a bake-off, ask which 2–3
    models; the first one is used as a placeholder until the bake-off stage fixes the model.
+   Pass them to `finetune-kit new` as `--bakeoff <a>,<b>[,<c>]`, with the first equal to `--model`.
    If they want a model that is not listed, run `finetune-kit models add <hf_id>` (add
    `--trust-remote-code` only if the user explicitly says they trust that model's code); such a
    model gets a generic profile and needs a learning-rate scan at the baseline stage.
@@ -144,7 +145,7 @@ experiment. Then ask, in this order:
         [--columns '{"text": "<col>", "label": "<col>"}'] --metric <metric> [--metric-params '<json>']
         [--guardrail <metric> --guardrail-params '<json>'] [--positive-class <label>]
         [--custom-metric <path:func> --direction max|min]
-        --seeds <N> --max-runs <runs> --max-hours <hours> [--subset <rows>]
+        [--bakeoff <model>,<b>[,<c>]] --seeds <N> --max-runs <runs> --max-hours <hours> [--subset <rows>]
     ```
 
     `--columns` takes the confirmed mapping from step 2 as JSON (keys `text`, `label`, `id`,
@@ -159,10 +160,11 @@ experiment. Then ask, in this order:
 
 11. **Write `experiment.md`** in the new experiment folder, from
     `.finetune-kit/templates/experiment.md`. Fill in every section in plain words: what the
-    user wants, each choice and why it was made. Record clearly whether a bake-off was chosen
-    and which candidates, because the bake-off stage reads that.
+    user wants, each choice and why it was made. Record whether a bake-off was chosen and
+    which candidates.
 
 ## Finish
 
-Tell the user the experiment folder name and that the next step checks the data and freezes
-the splits. Next command: `{{CMD}}check`.
+Tell the user the experiment folder name; `<exp>` is its number.
+
+{{FINISH}}

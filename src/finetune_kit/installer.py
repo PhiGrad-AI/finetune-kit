@@ -59,10 +59,21 @@ def _write(path: Path, text: str, written: list[Path]) -> None:
     written.append(path)
 
 
-def render(stage: str, ai: str) -> str:
-    """The stage prompt for one agent: frontmatter for skills, {{CMD}} filled in."""
+def stage_file(stage: str, ai: str) -> str:
+    """Where `ai` has the prompt of `stage`, relative to the project root. `stage` may be "<stage>"."""
     agent = AGENTS[ai]
-    body = _template("commands", f"{stage}.md").replace("{{CMD}}", agent.invoke)
+    if agent.kind == "skill":
+        return f"{agent.commands}/finetune-kit-{stage}/SKILL.md"
+    return f"{agent.commands}/finetune-kit.{stage}.md"
+
+
+def render(stage: str, ai: str) -> str:
+    """The stage prompt for one agent: frontmatter for skills, shared blocks and {{CMD}} filled in."""
+    agent = AGENTS[ai]
+    body = _template("commands", f"{stage}.md")
+    for key, shared in (("{{FINISH}}", "_finish.md"), ("{{GOTO_NEXT}}", "_goto.md")):
+        body = body.replace(key, _template("commands", shared).rstrip("\n"))
+    body = body.replace("{{CMD}}", agent.invoke).replace("{{STAGE_FILE}}", stage_file("<stage>", ai))
     if agent.kind == "skill":
         head = f"---\nname: finetune-kit-{stage}\ndescription: {DESCRIPTIONS[stage]}\n---\n\n"
     else:
@@ -133,13 +144,8 @@ def install(root: Path, ai: str, force: bool) -> list[Path]:
     if not keep.exists():
         _write(keep, "", written)
 
-    base = root / agent.commands
     for stage in STAGES:
-        if agent.kind == "skill":
-            target = base / f"finetune-kit-{stage}" / "SKILL.md"
-        else:
-            target = base / f"finetune-kit.{stage}.md"
-        _write(target, render(stage, ai), written)
+        _write(root / stage_file(stage, ai), render(stage, ai), written)
 
     if ai == "codex":
         _agents_md(root / "AGENTS.md", written)

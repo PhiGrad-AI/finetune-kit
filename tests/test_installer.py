@@ -59,7 +59,7 @@ def test_init_claude_writes_skills_and_hook(tmp_path):
 def test_claude_skills_use_claude_invocation(tmp_path):
     installer.install(tmp_path, "claude", force=False)
     text = (tmp_path / ".claude/skills/finetune-kit-setup/SKILL.md").read_text()
-    assert "/finetune-kit-check" in text
+    assert "/finetune-kit-<stage>" in text
     assert "$finetune-kit-" not in text and "/finetune-kit." not in text
 
 
@@ -134,9 +134,9 @@ def test_init_codex_and_cursor_paths(tmp_path):
         assert _frontmatter(skill.read_text())["name"] == f"finetune-kit-{stage}"
         assert (tmp_path / ".cursor/commands" / f"finetune-kit.{stage}.md").is_file()
     codex = (tmp_path / ".agents/skills/finetune-kit-setup/SKILL.md").read_text()
-    assert "$finetune-kit-check" in codex
+    assert "$finetune-kit-<stage>" in codex
     cursor = (tmp_path / ".cursor/commands/finetune-kit.setup.md").read_text()
-    assert "/finetune-kit.check" in cursor
+    assert "/finetune-kit.<stage>" in cursor
     mdc = (tmp_path / ".cursor/rules/finetune-kit.mdc").read_text()
     assert "alwaysApply: true" in mdc and ".finetune-kit/memory/research-rules.md" in mdc
     agents = (tmp_path / "AGENTS.md").read_text()
@@ -273,9 +273,10 @@ def test_command_prompts_follow_the_rules(tmp_path, stage):
     assert '{"error"' in text
     assert "~/.finetune-kit/" in text and "experiments/*/splits/" in text
     if stage in PREVIOUS:
-        assert f"/finetune-kit-{PREVIOUS[stage]}` first" in text
+        before = text.split("## Before you start", 1)[1].split("## How to work", 1)[0]
+        assert "finetune-kit next" in before and "Shall I start" in before
     finish = text.split("## Finish", 1)[1]
-    assert "Next command" in finish or "next command" in finish
+    assert "finetune-kit next" in finish and "Shall I start" in finish
 
 
 @pytest.mark.parametrize("ai,path", [
@@ -320,3 +321,54 @@ def test_init_rejects_malformed_settings_shapes(tmp_path, settings):
     (tmp_path / ".claude/settings.json").write_text(json.dumps(settings))
     with pytest.raises(ValueError, match="settings.json"):
         installer.install(tmp_path, "claude", force=False)
+
+
+# ---- stage hand-off ----
+
+_PREFIX = {"claude": "/finetune-kit-", "codex": "$finetune-kit-", "cursor": "/finetune-kit."}
+_STAGE_FILE = {
+    "claude": ".claude/skills/finetune-kit-<stage>/SKILL.md",
+    "codex": ".agents/skills/finetune-kit-<stage>/SKILL.md",
+    "cursor": ".cursor/commands/finetune-kit.<stage>.md",
+}
+
+
+@pytest.mark.parametrize("ai", ["claude", "codex", "cursor"])
+@pytest.mark.parametrize("stage", STAGES)
+def test_every_stage_ends_with_the_hand_off(stage, ai):
+    text = installer.render(stage, ai)
+    assert "{{" not in text
+    assert "finetune-kit next" in text
+    assert "Shall I start" in text
+    assert _PREFIX[ai] in text
+    assert _STAGE_FILE[ai] in text
+
+
+@pytest.mark.parametrize("ai", ["claude", "codex", "cursor"])
+def test_stage_file_matches_what_install_writes(tmp_path, ai):
+    written = {str(p.relative_to(tmp_path)) for p in installer.install(tmp_path, ai, force=False)}
+    for stage in STAGES:
+        assert _STAGE_FILE[ai].replace("<stage>", stage) in written
+    assert not any("_finish" in w or "_goto" in w for w in written)
+
+
+def test_research_summary_names_its_round():
+    assert "## Summary (round" in installer.render("research", "codex")
+
+
+def test_setup_passes_bakeoff_to_new():
+    assert "--bakeoff" in installer.render("setup", "codex")
+
+
+def test_bakeoff_reads_the_cli_not_prose():
+    text = installer.render("bakeoff", "codex")
+    assert "finetune-kit next" in text and "`bakeoff`" in text
+
+
+def test_rules_forbid_skipping_a_stage():
+    rules = _template_text("memory", "research-rules.md").lower()
+    assert "never skip a stage" in rules
+
+
+def _template_text(*parts):
+    return (resources.files("finetune_kit") / "templates").joinpath(*parts).read_text(encoding="utf-8")

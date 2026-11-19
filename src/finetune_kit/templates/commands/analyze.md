@@ -6,8 +6,10 @@ hurt, what to open next, and an error analysis of the best run's validation mist
 
 ## Before you start
 
-`experiments/<exp>/log.md` must exist. If it does not, the research stage has not run: tell the
-user to run `{{CMD}}research` first, and stop. If `log.md` has no `## Summary` yet, research is
+`experiments/<exp>/log.md` must exist. If it does not, the research stage has not run:
+{{GOTO_NEXT}}
+
+If `log.md` has no `## Summary` yet, research is
 still going or was interrupted: say this report is interim, and go on.
 
 ## How to work in this stage
@@ -72,5 +74,4 @@ you picked.
 
 ## Finish
 
-Next command: `{{CMD}}promote`, to train the final model and score the test set once. (Or
-`{{CMD}}hparams` to open more settings and research another round first.)
+{{FINISH}}

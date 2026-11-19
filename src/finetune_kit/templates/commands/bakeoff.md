@@ -5,12 +5,14 @@ pick one, fix it for the experiment, and write `bakeoff.md`.
 
 ## Before you start
 
-`experiments/<exp>/data-report.md` must exist. If it does not, the data check has not run: tell
-the user to run `{{CMD}}check` first, and stop.
+`experiments/<exp>/data-report.md` must exist. If it does not, the data check has not run:
+{{GOTO_NEXT}}
 
-Read `experiments/<exp>/experiment.md`. If the user did **not** choose a bake-off at setup, say
-the bake-off is skipped for this experiment and that the next command is `{{CMD}}hparams`, and
-stop (unless the user now asks for a bake-off; then ask which 2–3 models and go on).
+Otherwise run `finetune-kit next <exp>`. It names `bakeoff` as the stage only when a bake-off
+was requested at setup (the `bakeoff` field of `experiment.yaml`) and no model is chosen yet.
+If it names another stage, the bake-off is skipped or already done for this experiment. Say so
+and use the hand-off in the Finish section, unless the user now asks for a bake-off; then ask
+which 2–3 models and go on.
 
 ## How to work in this stage
 
@@ -69,4 +71,4 @@ you picked.
 
 ## Finish
 
-Next command: `{{CMD}}hparams`.
+{{FINISH}}

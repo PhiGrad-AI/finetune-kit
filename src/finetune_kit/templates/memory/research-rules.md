@@ -54,6 +54,8 @@ Research stops when `finetune-kit compare` reports `"stop": true`, which happens
 
 ## How the agent works
 
+- Never skip a stage. Each stage ends by running `finetune-kit next`, showing the next command and
+  asking the user to continue; never start another stage without their yes.
 - Ask the user one question at a time, in plain language. Explain any ML term in a few words.
 - Act only through `finetune-kit …` commands. Each prints one JSON object; read it before acting.
 - On `{"error": "..."}`, explain the problem to the user in plain words, then fix it or stop.

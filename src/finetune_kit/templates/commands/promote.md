@@ -5,8 +5,8 @@ export the final model with its threshold, speed figures and a standalone `predi
 
 ## Before you start
 
-`experiments/<exp>/report.md` must exist. If it does not, tell the user to run
-`{{CMD}}analyze` first, and stop.
+`experiments/<exp>/report.md` must exist. If it does not:
+{{GOTO_NEXT}}
 
 ## How to work in this stage
 
@@ -87,4 +87,7 @@ you picked.
 
 ## Finish
 
-The experiment is complete. To start another one, the next command is `{{CMD}}setup`.
+The experiment is complete. `finetune-kit next` returns `setup`; in the hand-off, say the
+experiment is done and ask whether the user wants to start a new experiment.
+
+{{FINISH}}
