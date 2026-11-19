@@ -48,7 +48,7 @@ follows; it calls `finetune-kit` commands (one JSON object per call) and writes 
 | `setup` | Asks task, data, model (or bake-off), metric, seeds and budget; creates the experiment. |
 | `check` | Validates data, warns about small validation sets, freezes splits, moves test to the vault. |
 | `bakeoff` | Optional. Runs 2-3 candidate models at defaults and fixes the winner. |
-| `hparams` | You name which hyperparameters and losses may be tuned; the agent picks the values. |
+| `hparams` | Two questions: which hyperparameters may be tuned, then which losses research may try (★ marks the recommended ones). The agent picks the values. |
 | `baseline` | Learning-rate scan, then the noise floor (default recipe on N seeds). |
 | `research` | The autoresearch loop under the keep rule until the stop rule or budget. |
 | `analyze` | What helped, error analysis of the best run (worst misses), `report.html`. |

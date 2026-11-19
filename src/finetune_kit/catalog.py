@@ -122,6 +122,29 @@ def listing(task: str, profile: ModelProfile, report: dict, objective: str) -> l
     return rows
 
 
+LOSS_HELP = {
+    "ce": "standard cross-entropy (the default)",
+    "focal": "focuses training on hard examples; helps with imbalanced labels",
+    "asl": "asymmetric loss; pushes harder on missed positives",
+    "rank": "rewards ranking positives above negatives",
+    "ce+rank": "cross-entropy plus ranking; suits AUC-style metrics",
+    "dice": "overlap-based; helps when entities are rare (not with crf)",
+}
+
+
+def loss_options(task: str, profile: ModelProfile, report: dict, objective: str) -> list[dict]:
+    """The losses research may be allowed to try for this task, with recommendations."""
+    rec = recommend(report, objective, task, profile.max_len)
+    rows = []
+    for name in LOSSES[task]:
+        reason = rec.get(f"loss:{name}")
+        rows.append({
+            "name": name, "help": LOSS_HELP[name], "always": name == "ce",
+            "recommended": reason is not None, "reason": reason,
+        })
+    return rows
+
+
 def _is_number(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 

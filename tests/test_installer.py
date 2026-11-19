@@ -290,6 +290,20 @@ def test_setup_prompt_mentions_data_sources(tmp_path, ai, path):
     assert "inspect-data" in text and "--source hf:" in text
 
 
+@pytest.mark.parametrize("ai", ["claude", "codex", "cursor"])
+def test_hparams_asks_about_losses_on_its_own(ai):
+    text = installer.render("hparams", ai)
+    steps = text.split("## Steps", 1)[1].split("## Finish", 1)[0]
+    settings_q = steps.index("Which of these may I change?")
+    loss_q = steps.index("Which losses may research try?")
+    confirm = steps.index("Commit this search space?")
+    assert settings_q < loss_q < confirm  # its own question, after the settings and before the commit
+    loss_step = steps[loss_q - 600:confirm]
+    assert "`losses` list" in loss_step and "★" in loss_step  # options come from the catalog
+    assert "wait" in loss_step.lower()  # one question at a time
+    assert "--losses" in steps
+
+
 def test_research_and_promote_specifics(tmp_path):
     installer.install(tmp_path, "claude", force=False)
     skills = tmp_path / ".claude/skills"

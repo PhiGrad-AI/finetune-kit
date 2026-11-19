@@ -487,7 +487,7 @@ def catalog(exp: str = typer.Argument(..., help="Experiment: number, name or pat
     """List tunable hyperparameters with recommendations for this experiment's data."""
     from finetune_kit import experiment as ex
     from finetune_kit import store
-    from finetune_kit.catalog import listing
+    from finetune_kit.catalog import listing, loss_options
 
     with _errors():
         exp_dir = _exp(exp)
@@ -495,7 +495,10 @@ def catalog(exp: str = typer.Argument(..., help="Experiment: number, name or pat
         rp = exp_dir / "data-report.json"
         report = json.loads(rp.read_text()) if rp.is_file() else {}
         profile = store.profile_for(cfg, {}, store.project_root(exp_dir))
-        emit({"catalog": listing(cfg.task, profile, report, cfg.objective.metric)})
+        emit({
+            "catalog": listing(cfg.task, profile, report, cfg.objective.metric),
+            "losses": loss_options(cfg.task, profile, report, cfg.objective.metric),
+        })
 
 
 space_app = typer.Typer(add_completion=False, no_args_is_help=True, help="Search space.")
@@ -506,17 +509,24 @@ app.add_typer(space_app, name="space")
 def space_commit(
     exp: str = typer.Argument(..., help="Experiment: number, name or path."),
     tunable: str = typer.Option(..., "--tunable", help="Comma-separated hyperparameter names."),
-    losses: str = typer.Option("ce", "--losses", help="Comma-separated allowed losses."),
+    losses: Optional[str] = typer.Option(
+        None, "--losses", help="Comma-separated losses research may try (required; ce is always allowed)."
+    ),
 ) -> None:
     """Commit (or re-commit, next round) the tunable hyperparameters and losses."""
     from finetune_kit import experiment as ex
 
     with _errors():
+        if losses is None or not losses.strip():
+            raise ValueError(
+                "--losses is required: say which losses research may try (e.g. --losses ce or ce,focal)"
+            )
         exp_dir = _exp(exp)
-        space = ex.SearchSpace(
-            round=0, tunable=[t.strip() for t in tunable.split(",") if t.strip()],
-            losses=[l.strip() for l in losses.split(",") if l.strip()],
-        )
+        names = [t.strip() for t in tunable.split(",") if t.strip()]
+        allowed = ["ce"] + [l for l in dict.fromkeys(l.strip() for l in losses.split(",")) if l and l != "ce"]
+        if len(allowed) > 1 and "loss" not in names:
+            names.append("loss")  # allowing a second loss means research may switch between them
+        space = ex.SearchSpace(round=0, tunable=names, losses=allowed)
         with ex.state_lock(exp_dir):
             state = ex.commit_space(exp_dir, space)
     emit({"round": state.round, "tunable": space.tunable, "losses": space.losses})
