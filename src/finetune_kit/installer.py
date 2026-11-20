@@ -24,18 +24,18 @@ GUARD_COMMAND = "finetune-kit _guard"
 GUARD_MATCHER = "Edit|Write|MultiEdit|NotebookEdit"
 
 DESCRIPTIONS = {
-    "start": "Start here. Shows every fine-tuning step in plain words and where you are. Use when the user wants to fine-tune or train a model and doesn't know where to start, or asks what the steps are.",
-    "choose-task": "Step 1 of 14. Choose what the model should learn (label whole texts, or tag words in them) and create the experiment. Use when the user wants to start a new fine-tuning or training experiment.",
+    "start": "Start here. Shows every fine-tuning step in plain words and where you are. Use when the user wants to fine-tune or train a model but doesn't know where to start, or wants the overview of the steps.",
+    "choose-task": "Step 1 of 14. Choose what the model should learn (label whole texts, or tag words in them) and create the experiment. Use when the user wants to begin a new experiment.",
     "choose-data": "Step 2 of 14. Choose the training data (one file, three files or a Hugging Face dataset) and which column is which. Use when the user wants to pick or change the dataset for the experiment.",
     "choose-model": "Step 3 of 14. Choose the model to fine-tune, or 2-3 models to compare. Use when the user asks which model to use or wants to change the model.",
     "choose-goal": "Step 4 of 14. Choose the score to improve and an optional score that must not get worse. Use when the user talks about the metric, what a good result is, or which mistakes matter most.",
     "check-data": "Step 5 of 14. Check the data for problems and split it into training, validation and a locked-away test part. Use when the user asks to check, validate or split their training data.",
     "compare-models": "Step 6 of 14. Train the 2-3 chosen models side by side and keep the best one. Use when the user asked to compare models or wants a model bake-off.",
     "choose-loss": "Step 7 of 14. Choose which losses (ways of measuring mistakes) research may try, or start another round with other losses. Use when the user asks about losses or wants to try more after a report.",
-    "choose-hyperparameters": "Step 8 of 14. Choose which training settings (hyperparameters) research may change. Use when the user asks what can be tuned or wants to open more settings.",
+    "choose-hyperparameters": "Step 8 of 14, after choose-loss. Choose which training settings (hyperparameters) research may change. Use when the user asks what can be tuned; to open more settings in a new round, start with choose-loss.",
     "choose-learning-rate": "Step 9 of 14. Use the model's usual learning rate or run a short test to find a better one. Use when the user asks about the learning rate or learning speed.",
     "choose-experiments": "Step 10 of 14. Choose how many experiments and hours research may use, seeds per experiment and an optional smaller subset. Use when the user talks about budget, time or how many runs.",
-    "start-experiment": "Step 11 of 14. Measure the starting point, then run or resume the experiments on their own until they stop. Use when the user wants to start, run, continue or resume training or research.",
+    "start-experiment": "Step 11 of 14. Measure the starting point, then run or resume the experiments on their own until they stop. Use once the setup steps are done and the user wants to start, continue or resume the experiments.",
     "status": "Step 12 of 14. Show how the experiments are going (how many ran, the best score so far, the budget left). Use when the user asks for progress, status or how it is going.",
     "report": "Step 13 of 14. Explain what was tried, what helped and what didn't, and the mistakes the best model makes. Use when the experiments have stopped or the user asks for results or a report.",
     "finish": "Step 14 of 14. Train the final model on all the data, score the test set once and export it with predict.py. Use when the user is ready to finish, finalize or ship the model.",
@@ -94,7 +94,7 @@ def _order_words(stage: str) -> dict[str, str]:
         go_on = ("You may continue with this step only if `stage` is exactly `finish`. Scoring the test "
                  "set cannot be undone, so never finish when `next` names any other step. One exception: "
                  "`choose-task` with the reason \"this experiment is complete; start a new one\" means it "
-                 "was finished already; then do only step 1 under Steps (Already done?): summarize, never "
+                 "was finished already; then do only step 1 below (Already done?): summarize, never "
                  "score the test set again.")
     else:
         go_on = (f"If `stage` is `{stage}` or a later step ({_words(later)}), continue with this step "

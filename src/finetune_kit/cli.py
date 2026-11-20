@@ -724,7 +724,8 @@ def init(
     agent = installer.AGENTS[ai]
     typer.echo(f"finetune-kit installed for {agent.label} in {root.resolve()} ({len(written)} files written).")
     if installer.rules_kept(root):
-        typer.echo(f"Kept your edited {installer.RULES} (use --force to replace it with the shipped rules).")
+        typer.echo(f"Kept the existing {installer.RULES}: experiments check it for changes, so init does not "
+                   "replace it. New projects get the updated wording.")
     typer.echo(f"Next: open {agent.label} in this project and run {agent.invoke}start")
 
 

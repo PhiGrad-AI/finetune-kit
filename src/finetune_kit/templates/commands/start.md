@@ -44,8 +44,8 @@ step. This step changes nothing.
      used any time while they run; steps 13-14 explain the results and produce the final model.
 
 4. **Where they are.**
-   - If `experiment` is `null`: there is no experiment yet, so the first step is step 1, Choose
-     the task (`{{CMD}}choose-task`).
+   - If `experiment` is `null`: there is no experiment yet, so the first step is Step 1 of 14 —
+     Choose the task (`{{CMD}}choose-task`).
    - Otherwise: name the experiment, mark the steps whose `status` is `done` with ✓ in the list
      above (`skipped` steps as "skipped", `optional` ones as "optional"), and say which step is
      next and why (`next.reason`, in plain words). If `next.stage` is `choose-task` with the

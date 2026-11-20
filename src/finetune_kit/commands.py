@@ -657,6 +657,8 @@ def next_stage(root: Path, exp_dir: Path | None) -> dict:
             return out("choose-learning-rate", "the learning-speed test hasn't finished")
         if not state.budget_chosen:
             return out("choose-experiments", "experiment budget not chosen yet")
+        if any(r["stage"] == "noise" and r["status"] not in store.TERMINAL for r in store.list_requests(exp_dir)):
+            return out("start-experiment", "the starting-point measurement is running")
         return out("start-experiment", "the starting-point measurement hasn't run yet")
     if not _research_finished(exp_dir, state.round):
         return out("start-experiment", f"research round {state.round} is still running",

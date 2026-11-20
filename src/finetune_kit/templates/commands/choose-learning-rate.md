@@ -19,8 +19,9 @@ plain words and use the hand-off in the Finish section.
 ## Steps
 
 1. **Resume check.** Run `finetune-kit status <exp>` and `finetune-kit compare <exp>`. If an
-   `lr-scan` run is queued or running, the test was started before: wait for those runs (step 4).
-   If `runs` already has `lr-scan` rows and none is pending, go to step 5.
+   `lr-scan` run is queued or running, the test was started before: wait for those runs (step 4
+   below).
+   If `runs` already has `lr-scan` rows and none is pending, go to step 5 below.
 
 2. **Explain**, in plain words: the learning rate is how big a step the model takes each time it
    learns from a batch of examples. Too big and training becomes unstable; too small and it
@@ -35,7 +36,8 @@ plain words and use the hand-off in the Finish section.
 
 3. **Ask:** "Shall I use the model's usual learning speed, or run a short test to find one?"
    Wait for the answer.
-   - Usual value: run `finetune-kit set learning-rate <exp> default`, then go to step 6. If the
+   - Usual value: run `finetune-kit set learning-rate <exp> default`, then go to step 6 below. If
+     the
      model's notes say "generic: lr-scan required", warn first that its usual value is only a
      guess, and go on only if the user still wants it.
    - Test: run `finetune-kit set learning-rate <exp> scan`, then `finetune-kit lr-scan <exp>`. It
@@ -53,7 +55,7 @@ plain words and use the hand-off in the Finish section.
 
 6. **Write the learning-rate part of `baseline.md`** in the experiment folder from
    `.finetune-kit/templates/baseline.md` (the *Learning-rate scan* section: skipped and why, or
-   the table and the chosen value). Step 11 fills in the rest.
+   the table and the chosen value). Step 11 of 14 — Run the experiments fills in the rest.
 
 ## Finish
 

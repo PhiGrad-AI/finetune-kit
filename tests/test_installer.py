@@ -575,3 +575,56 @@ def test_compare_models_after_start_needs_a_new_experiment():
 def test_choose_task_with_an_experiment_in_progress_asks_first():
     text = installer.render("choose-task", "codex")
     assert "in progress" in text and "new experiment" in text
+
+
+# ---- fix round 1 ----
+
+@pytest.mark.parametrize("ai", AIS)
+def test_choose_hyperparameters_sends_a_new_round_to_choose_loss(ai):
+    text = installer.render("choose-hyperparameters", ai)
+    before = " ".join(text.split("## How to work", 1)[0].split())
+    assert "A new round always starts with the loss question." in before
+    assert "If `next.stage` from the order check is `choose-hyperparameters`, a new round is open" in before
+    assert "Do not ask about settings and do not commit anything here" in before
+    assert f"Next: Step 7 of 14 — Choose the loss (a new round starts with the loss question). Command: {_PREFIX[ai]}choose-loss" in before
+    assert "after choose-loss" in installer.DESCRIPTIONS["choose-hyperparameters"]
+
+
+def test_descriptions_do_not_overlap_on_starting():
+    d = installer.DESCRIPTIONS
+    assert "doesn't know where to start" in d["start"] and "overview" in d["start"]
+    assert "begin a new experiment" in d["choose-task"]
+    assert "once the setup steps are done" in d["start-experiment"]
+
+
+def test_status_checks_install_and_never_starts_a_second_loop():
+    text = installer.render("status", "codex")
+    before = text.split("## Before you start", 1)[1].split("## How to work", 1)[0]
+    assert "research-rules.md` must exist" in before and "finetune-kit version" in before
+    flat = " ".join(text.split())
+    assert "Never offer to start a second research loop while one runs" in flat
+    assert "If step 5 above found research running, do not offer any step" in flat
+    assert "$finetune-kit-start-experiment` resumes it" in flat
+
+
+@pytest.mark.parametrize("stage", [s for s in STAGES if s != "start"])  # start explains its own list
+def test_inner_and_global_step_references_are_distinct(stage):
+    import re
+    text = installer.render(stage, "codex")
+    flat = " ".join(l for l in text.splitlines() if not l.startswith("#")).split()
+    flat = " ".join(flat)
+    # an inner step is "step N below/above/of the loop"; a global one is "Step N of 14"
+    for m in re.finditer(r"\b[Ss]teps? \d+(?:[–-]\d+)?", flat):
+        assert flat[m.end():].startswith((" of 14", " below", " above", " of the loop")), \
+            (stage, flat[m.start() - 40:m.end() + 20])
+
+
+def test_init_message_explains_why_rules_are_kept(runner, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    installer.install(tmp_path, "claude", force=False)
+    (tmp_path / ".finetune-kit/memory/research-rules.md").write_text("older wording")
+    r = runner.invoke(app, ["init", "--ai", "claude", "--here"])
+    assert r.exit_code == 0, r.output
+    assert "experiments check it for changes" in r.output and "New projects get the updated wording" in r.output
+    assert "your edited" not in r.output
+    assert (tmp_path / ".finetune-kit/memory/research-rules.md").read_text() == "older wording"

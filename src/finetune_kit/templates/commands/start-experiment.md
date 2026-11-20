@@ -23,9 +23,9 @@ replies between runs. The only reasons to stop early are the stop rule, an error
 
 1. **Resume check.** Run `finetune-kit compare <exp>` and `finetune-kit status <exp>`.
    - If `noise.sigma_obj` is already set, the starting point is measured: if `baseline.md` has
-     no *Noise floor* section yet, write it from what `compare` shows (step 4), then go to
+     no *Noise floor* section yet, write it from what `compare` shows (step 4 below), then go to
      Part 2.
-   - If a `noise` run is queued or running, wait for it and continue from step 3.
+   - If a `noise` run is queued or running, wait for it and continue from step 3 below.
 
 2. **Starting point.** Explain: the default recipe is now trained once per seed (the experiment's
    `seeds`), to measure where the model starts and how much its score varies by chance. The
@@ -47,8 +47,8 @@ replies between runs. The only reasons to stop early are the stop rule, an error
      be hard to prove, and more seeds per run would help (that needs a new experiment).
 
 4. **Write the rest of `baseline.md`** in the experiment folder from
-   `.finetune-kit/templates/baseline.md` (keep the *Learning-rate scan* section written in step
-   9; if it is missing, fill it in from `compare`).
+   `.finetune-kit/templates/baseline.md` (keep the *Learning-rate scan* section written in Step
+   9 of 14 — Choose the learning speed; if it is missing, fill it in from `compare`).
 
 5. Go straight on to Part 2; do not wait for a reply.
 
@@ -63,7 +63,7 @@ replies between runs. The only reasons to stop early are the stop rule, an error
    `objective_mean`, `objective_std`, `verdict`, `description`, `round`).
 3. Run `finetune-kit status <exp>`. If a research run is still queued or running from an earlier
    session, wait for it first (wait loop), then record its result in `log.md` if its entry has
-   no result yet (step 6 below).
+   no result yet (step 6 of the loop below).
 4. If `log.md` does not exist, create it with a short header: experiment, objective metric and
    direction, guardrail, baseline mean ± σ, keep bar, and the tunable settings and losses from
    `search-space.yaml`. If the search-space round is newer than the last round in `log.md`, add a
@@ -132,7 +132,7 @@ Repeat:
    For a crash or timeout, write the seeds' `error` instead of the numbers, and do not retry
    that config unchanged.
 
-7. Give the user one short line (run, idea, verdict, current best), then go back to step 1.
+7. Give the user one short line (run, idea, verdict, current best), then go back to step 1 of the loop.
 
 ### Summary
 

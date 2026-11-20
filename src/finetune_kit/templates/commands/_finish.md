@@ -12,7 +12,8 @@ Hand off to the next step. Do this every time, in this order:
    where `<step>` is the step's name (`next.stage`) and `<reason>` is said in plain words.
 3. Ask: "Shall I start <title> now?" and wait for the answer.
 4. If the user says yes, open `{{STEP_FILE}}`
-   (with `<step>` replaced by that step's name) and follow it from the top, including its "Before you start" checks. If the user picks one
-   of the alternatives instead, open that step's file instead.
+   (with `<step>` replaced by that step's name) and follow it from the top, including its
+   "Before you start" checks. If the user picks one of the alternatives instead, open that
+   step's file instead.
 5. If the user says no, stop. Tell them they can run the command whenever they like.
 6. Never start a step the user has not agreed to, and never skip one.

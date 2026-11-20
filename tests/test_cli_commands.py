@@ -1145,6 +1145,9 @@ def test_next_full_walk_fresh_experiment(runner, seq_jsonl, tmp_path):
     _set_state(d, budget_chosen=True)
     out = _next(runner)
     assert out["stage"] == "start-experiment" and out["reason"] == "the starting-point measurement hasn't run yet"
+    store.new_run(d, "noise", {}, [0, 1, 2], "noise floor")  # queued, not finished
+    out = _next(runner)
+    assert out["stage"] == "start-experiment" and out["reason"] == "the starting-point measurement is running"
     _set_state(d, sigma_obj=0.01, round=1)
     out = _next(runner)
     assert out["stage"] == "start-experiment" and out["alternatives"][0]["stage"] == "status"

@@ -24,12 +24,13 @@ that, a different model needs a new experiment (`{{CMD}}choose-task`).
    it the user's task. Bigger models are often better but slower.
 
 2. **Ask:** "Which model shall we start from?" Also offer **comparing**: the user picks 2-3
-   models, and step 6 trains each one on their data and keeps the best. Wait for the answer.
+   models, and Step 6 of 14 — Compare models trains each one on their data and keeps the best. Wait for the answer.
    - If they want to compare, ask which 2-3 models (one question). The first one is used until
      the comparison picks the winner.
    - If they want a model that is not listed, run `finetune-kit models add <hf_id>` (add
      `--trust-remote-code` only if the user explicitly says they trust that model's code); such a
-     model gets a generic profile, so a learning-rate test (step 9) is recommended for it.
+     model gets a generic profile, so a learning-rate test (Step 9 of 14 — Choose the
+     learning speed) is recommended for it.
 
 3. **Record it.** Run `finetune-kit set model <exp> <model key>`, or to compare,
    `finetune-kit set model <exp> <first> --compare <first>,<b>[,<c>]`. On an error, explain it,

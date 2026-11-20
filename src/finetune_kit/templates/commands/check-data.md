@@ -21,7 +21,7 @@ freeze the train / validation / test splits, and write `data-report.md`.
    tokenizer).
 
    If the error says the splits are already frozen, the check ran before: read the existing
-   `experiments/<exp>/data-report.json` (reading is fine) and continue with step 2. Only offer
+   `experiments/<exp>/data-report.json` (reading is fine) and continue with step 2 below. Only offer
    `--resplit` if the user wants to change the data, and warn that it resets the experiment's
    progress (model comparison, starting-point measurement, best run).
 
@@ -33,7 +33,8 @@ freeze the train / validation / test splits, and write `data-report.md`.
    - `ignored_splits`, if not empty: published splits of the dataset that were not used. Tell
      the user which ones and that they play no part.
    - `label_dist` and `minority_share`: how the labels are spread. If the smallest class is
-     rare (say under 30%), mention that the loss and settings steps (7 and 8) will suggest options for that.
+     rare (say under 30%), mention that Step 7 of 14 — Choose the loss and Step 8 of 14 — Choose
+     the settings will suggest options for that.
    - `token_len` (`p50`, `p95`, `max`) and `n_over_max_len`: text length in model tokens. Rows
      longer than the model's max length are cut off (truncated) during training; say how many,
      and whether it matters (a few rows: fine; many rows: the end of those texts is never seen,
@@ -58,9 +59,10 @@ freeze the train / validation / test splits, and write `data-report.md`.
      number of positives the warning asks for: X ≈ needed ÷ (all positives across train, val
      and test), rounded up to the next 0.05. Test stays at 10%. Above 0.3 the training set gets
      noticeably smaller: say so and let the user decide. If they agree, run it and explain the
-     new report (steps 2–3).
+     new report (steps 2–3 above).
    - If the user gave separate validation and test files, `--val-frac` does not apply: they need
-     a bigger validation file and a new experiment via `{{CMD}}choose-task`. Let them decide whether to
+     a bigger validation file and a new experiment via `{{CMD}}choose-task`. Let them decide
+     whether to
      go on anyway.
 
 5. **Write `data-report.md`** in the experiment folder with these sections: *Summary* (two or

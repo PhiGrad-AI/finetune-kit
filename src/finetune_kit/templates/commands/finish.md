@@ -19,8 +19,8 @@ If `report.md` is missing, say so; `finetune-kit compare` has all you need to ch
 1. **Already done?** If `experiments/<exp>/final/test_metrics.json` exists, the experiment was
    promoted before and its test set is used up. Do not promote again: read
    `final/test_metrics.json`, `final/threshold.json` (if present) and `final/throughput.json`,
-   summarize them (step 6), and finish.
-   If `finetune-kit status <exp>` shows a `promote` run queued or running, wait for it (step 5).
+   summarize them (step 6 below), and finish.
+   If `finetune-kit status <exp>` shows a `promote` run queued or running, wait for it (step 5 below).
 
 2. **Choose the run.** Run `finetune-kit compare <exp>`. Recommend the `best` run, and show its
    description, config and validation mean ± std. Only a `keep` or `keep-simpler` run, or the

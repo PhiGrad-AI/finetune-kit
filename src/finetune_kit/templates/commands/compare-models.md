@@ -8,19 +8,19 @@ and write `bakeoff.md`.
 
 {{ORDER_CHECK}}
 
-`next` names `compare-models` as the step only when a comparison was chosen in step 3
-(the `bakeoff` field of `experiment.yaml`) and no model is chosen yet. If it names a later
+`next` names `compare-models` as the step only when a comparison was chosen in Step 3 of 14 — Choose the
+model (the `bakeoff` field of `experiment.yaml`) and no model is chosen yet. If it names a later
 step, the comparison is skipped or already done for this experiment. Say so and use the hand-off
 in the Finish section, unless the user now asks for a comparison.
 
-- **Late comparison.** If the user opts in now although none was chosen in step 3, ask which
+- **Late comparison.** If the user opts in now although none was chosen in Step 3 of 14 — Choose the model, ask which
   2–3 models and run it through to `finetune-kit bakeoff choose <exp> <model>` and `bakeoff.md`,
   so `finetune-kit next` agrees at Finish. If the comparison is abandoned midway, tell the user it
   is incomplete and that `finetune-kit next` will move on without it.
-- **Too late for a comparison.** Once the experiments have started (step 11 measured the
-  starting point), the model is locked: comparing models needs a new experiment
+- **Too late for a comparison.** Once the experiments have started (Step 11 of 14 — Run the
+  experiments measured the starting point), the model is locked: comparing models needs a new experiment
   (`{{CMD}}choose-task`), and `bakeoff choose` will refuse. Say so instead.
-- **Chosen in step 3, user declines now.** If `next` names `compare-models` and the user
+- **Chosen in Step 3 of 14, user declines now.** If `next` names `compare-models` and the user
   declines, say a comparison was chosen and the experiment cannot move past it until a model is
   chosen (`finetune-kit bakeoff choose <exp> <model>` with the first model counts as choosing).
 
@@ -31,8 +31,8 @@ in the Finish section, unless the user now asks for a comparison.
 ## Steps
 
 1. **Resume check.** Run `finetune-kit bakeoff <exp>` (no `--models`). If `bakeoff` already
-   holds a result and `pending` is 0, go to step 4. If `pending` is above 0, find the runs with
-   `finetune-kit status <exp>` and wait for them (step 3).
+   holds a result and `pending` is 0, go to step 4 below. If `pending` is above 0, find the runs with
+   `finetune-kit status <exp>` and wait for them (step 3 below).
 
 2. **Start.** Tell the user the candidates and that each one is trained `seeds` times (from
    `experiment.yaml`) with its default settings; this can take hours. Then run

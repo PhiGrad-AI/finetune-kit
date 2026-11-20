@@ -8,8 +8,8 @@ than the standard one.
 
 {{ORDER_CHECK}}
 
-**A new round?** If the experiments have already started (step 11 has run; `finetune-kit compare
-<exp>` shows a `noise.sigma_obj`), choosing losses now starts a new round of research. Read the
+**A new round?** If the experiments have already started (Step 11 of 14 — Run the experiments has
+run; `finetune-kit compare <exp>` shows a `noise.sigma_obj`), choosing losses now starts a new round of research. Read the
 `round` in `experiments/<exp>/search-space.yaml` (reading is fine) and tell the user before you
 ask anything: "This starts round N+1. The best run so far, the starting-point measurement and the
 remaining budget carry over; research continues from the current best with the new choices. In
