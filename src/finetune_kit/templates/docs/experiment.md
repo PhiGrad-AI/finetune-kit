@@ -14,7 +14,7 @@ costs them.>
 | Task | <seq-cls or token-cls> | <reason> |
 | Data | <one file split 80/10/10 by finetune-kit, or train / val / test paths> | <reason> |
 | Model | <model key> | <reason> |
-| Bake-off | <no, or yes: candidates a, b, c (the first is a placeholder until the bake-off)> | <reason> |
+| Bake-off | <no, or yes: candidates a, b, c (the first is a placeholder until the comparison)> | <reason> |
 | Objective metric | <metric, its target if any, higher or lower is better> | <reason> |
 | Positive class | <label, or not needed> | <reason> |
 | Guardrail metric | <metric and target, or none> | <reason> |
@@ -28,4 +28,5 @@ costs them.>
 
 ## Next
 
-Check the data and freeze the splits (the check stage).
+Answer the remaining questions (data, model, goal), then check the data and freeze the splits
+(the check-data step).

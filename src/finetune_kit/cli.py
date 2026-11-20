@@ -712,7 +712,7 @@ def init(
         "then fail their tamper check (the rules are checksummed at baseline).",
     ),
 ) -> None:
-    """Install the finetune-kit stage commands, rules and templates for a coding agent."""
+    """Install the finetune-kit step commands, rules and templates for a coding agent."""
     from finetune_kit import installer
 
     with _errors():
@@ -725,7 +725,7 @@ def init(
     typer.echo(f"finetune-kit installed for {agent.label} in {root.resolve()} ({len(written)} files written).")
     if installer.rules_kept(root):
         typer.echo(f"Kept your edited {installer.RULES} (use --force to replace it with the shipped rules).")
-    typer.echo(f"Next: open {agent.label} in this project and run {agent.invoke}setup")
+    typer.echo(f"Next: open {agent.label} in this project and run {agent.invoke}start")
 
 
 @app.command("_guard", hidden=True)

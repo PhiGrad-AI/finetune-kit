@@ -1,7 +1,8 @@
-# finetune-kit: promote
+# finetune-kit: finish
 
-Retrain the chosen recipe on the full training data, score the test set **exactly once**, and
-export the final model with its threshold, speed figures and a standalone `predict.py`.
+Step 14 of 14. Retrain the chosen recipe on the full training data, score the test set
+**exactly once**, and export the final model with its threshold, speed figures and a standalone
+`predict.py`.
 
 ## Before you start
 
@@ -9,28 +10,9 @@ export the final model with its threshold, speed figures and a standalone `predi
 
 If `report.md` is missing, say so; `finetune-kit compare` has all you need to choose the run.
 
-## How to work in this stage
+## How to work in this step
 
-- First read `.finetune-kit/memory/research-rules.md` and follow it throughout.
-- Ask **one question at a time** and wait for the answer. Use plain language and explain any
-  ML term in a few words the first time it comes up.
-- Act only through `finetune-kit …` commands. Each prints one JSON object: read it before you
-  go on, and base what you tell the user on it, not on guesses.
-- Never edit files that finetune-kit writes (`experiment.yaml`, `search-space.yaml`,
-  `state.json`, `results.tsv`, `data-report.json`, `splits/`, `runs/`, `final/`,
-  `.finetune-kit/memory/`). Never open anything under `~/.finetune-kit/`, `~/.cache/huggingface/`
-  or `experiments/*/splits/`, and do not open the user's dataset files.
-- If a command prints `{"error": "..."}`, tell the user in plain words what went wrong and what
-  would fix it. Fix it yourself when the fix is yours to make (for example a mistyped option);
-  otherwise stop and wait for the user.
-- Training runs detach and return at once. Poll a run with
-  `finetune-kit wait <run_id> --exp <exp> --timeout 540`. If it returns `"status": "queued"` or
-  `"running"`, call it again, in a loop, until the status is `done`, `crash` or `timeout`.
-  Give the user a short progress line now and then, not after every poll.
-
-**Which experiment.** `<exp>` below is the experiment folder's number (e.g. `001`). If the user
-named one, use it. Otherwise use the highest-numbered folder in `experiments/` and say which one
-you picked.
+{{HOW_TO_WORK}}
 
 ## Steps
 
@@ -88,7 +70,8 @@ you picked.
 
 ## Finish
 
-The experiment is complete. `finetune-kit next` returns `setup`; in the hand-off, say the
-experiment is done and ask whether the user wants to start a new experiment.
+The experiment is complete. `finetune-kit next` returns `choose-task` ("this experiment is
+complete; start a new one"); in the hand-off, say the experiment is done and ask whether the user
+wants to start a new experiment.
 
 {{FINISH}}

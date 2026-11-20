@@ -654,10 +654,10 @@ def next_stage(root: Path, exp_dir: Path | None) -> dict:
         if state.lr_choice is None:
             return out("choose-learning-rate", "learning speed not chosen yet")
         if state.lr_choice == "scan" and state.lr_scan_best is None:
-            return out("choose-learning-rate", "learning-rate scan not finished")
+            return out("choose-learning-rate", "the learning-speed test hasn't finished")
         if not state.budget_chosen:
             return out("choose-experiments", "experiment budget not chosen yet")
-        return out("start-experiment", "noise floor not measured yet")
+        return out("start-experiment", "the starting-point measurement hasn't run yet")
     if not _research_finished(exp_dir, state.round):
         return out("start-experiment", f"research round {state.round} is still running",
                    [{"stage": "status", "reason": "see how the experiments are going"}])

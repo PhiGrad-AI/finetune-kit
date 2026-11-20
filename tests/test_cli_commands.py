@@ -1139,11 +1139,12 @@ def test_next_full_walk_fresh_experiment(runner, seq_jsonl, tmp_path):
     assert out["stage"] == "choose-learning-rate" and out["reason"] == "learning speed not chosen yet"
     assert runner.invoke(app, ["set", "learning-rate", "001", "scan"]).exit_code == 0
     out = _next(runner)
-    assert out["stage"] == "choose-learning-rate" and out["reason"] == "learning-rate scan not finished"
+    assert out["stage"] == "choose-learning-rate" and out["reason"] == "the learning-speed test hasn't finished"
     _set_state(d, lr_scan_best=1e-4)
     assert _next(runner)["stage"] == "choose-experiments"
     _set_state(d, budget_chosen=True)
-    assert _next(runner)["stage"] == "start-experiment"
+    out = _next(runner)
+    assert out["stage"] == "start-experiment" and out["reason"] == "the starting-point measurement hasn't run yet"
     _set_state(d, sigma_obj=0.01, round=1)
     out = _next(runner)
     assert out["stage"] == "start-experiment" and out["alternatives"][0]["stage"] == "status"

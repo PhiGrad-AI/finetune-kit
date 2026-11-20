@@ -179,7 +179,7 @@ def validate_config(
             errs.append(f"{key}: expected true or false, got {val!r}")
             continue
         if key not in tunable:
-            errs.append(f"{key} is not tunable (locked at {defaults.get(key)!r}); re-run the hparams stage to open it")
+            errs.append(f"{key} is not tunable (locked at {defaults.get(key)!r}); open it in another round (steps choose-loss, then choose-hyperparameters)")
             continue
         errs.extend(_check_value(e, val, allowed_losses, profile))
         errs.extend(_check_model_support(key, val, profile))

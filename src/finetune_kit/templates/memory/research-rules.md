@@ -1,6 +1,6 @@
 # finetune-kit research rules
 
-These rules bind the coding agent in every finetune-kit stage. The `finetune-kit` CLI enforces
+These rules bind the coding agent in every finetune-kit step. The `finetune-kit` CLI enforces
 the numbers (search space, hard limits, seeds, budget, keep verdict, test isolation); the agent
 follows the rest.
 
@@ -14,8 +14,8 @@ refuses to start if the file changes.
    run a one-line description (`--desc`) and write a one-line hypothesis in `log.md` before the
    result is known.
 2. **Only the search space moves.** Change only settings listed in the experiment's
-   `search-space.yaml`. Everything else stays at the profile default. To open more settings,
-   the user reruns the hparams stage, which starts a new round.
+   `search-space.yaml`. Everything else stays at the profile default. To open more settings or
+   losses, the user starts a new round with the choose-loss and choose-hyperparameters steps.
 3. **Keep only what beats the noise.** A run is kept only if it beats the best run by more than
    the noise bar and does not hurt the guardrail metric beyond its own noise (exact rule below).
    Otherwise it is discarded and the next run starts again from the last kept config. An equal
@@ -54,8 +54,12 @@ Research stops when `finetune-kit compare` reports `"stop": true`, which happens
 
 ## How the agent works
 
-- Never skip a stage. Each stage ends by running `finetune-kit next`, showing the next command and
-  asking the user to continue; never start another stage without their yes.
+- The steps, in order: start, choose-task, choose-data, choose-model, choose-goal, check-data,
+  compare-models (only when comparing models), choose-loss, choose-hyperparameters,
+  choose-learning-rate, choose-experiments, start-experiment, status (any time), report, finish.
+- Never skip a step. Each step ends by running `finetune-kit next`, showing the next step
+  ("Step N of 14") and its command, and asking the user to continue; never start another step
+  without their yes.
 - Ask the user one question at a time, in plain language. Explain any ML term in a few words.
 - Act only through `finetune-kit …` commands. Each prints one JSON object; read it before acting.
 - On `{"error": "..."}`, explain the problem to the user in plain words, then fix it or stop.
