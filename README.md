@@ -233,6 +233,10 @@ Open it in any browser.
 Ideas, bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to
 set up the project, run the tests and propose a change.
 
+## License
+
+MIT. See [LICENSE](LICENSE).
+
 ---
 
 ## For engineers
