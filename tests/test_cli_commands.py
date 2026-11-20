@@ -141,10 +141,44 @@ def test_space_commit_cli(runner, seq_jsonl, tmp_path):
     _new(runner, seq_jsonl)
     r = runner.invoke(app, ["space", "commit", "001", "--tunable", "lr,dropout", "--losses", "ce,focal"])
     assert r.exit_code == 0, r.stdout
-    assert _out(r) == {"round": 1, "tunable": ["lr", "dropout"], "losses": ["ce", "focal"]}
+    # allowing a loss besides ce makes `loss` itself tunable
+    assert _out(r) == {"round": 1, "tunable": ["lr", "dropout", "loss"], "losses": ["ce", "focal"]}
     assert ex.load(_exp_dir(tmp_path))[1].losses == ["ce", "focal"]
-    bad = runner.invoke(app, ["space", "commit", "001", "--tunable", "nope"])
+    bad = runner.invoke(app, ["space", "commit", "001", "--tunable", "nope", "--losses", "ce"])
     assert bad.exit_code == 2
+
+
+def test_space_commit_requires_losses(runner, seq_jsonl, tmp_path):
+    _new(runner, seq_jsonl)
+    r = runner.invoke(app, ["space", "commit", "001", "--tunable", "lr"])
+    assert r.exit_code == 2
+    assert "--losses is required" in _out(r)["error"]
+    assert not (_exp_dir(tmp_path) / "search-space.yaml").exists()
+
+
+def test_space_commit_always_allows_ce(runner, seq_jsonl, tmp_path):
+    _new(runner, seq_jsonl)
+    r = runner.invoke(app, ["space", "commit", "001", "--tunable", "lr", "--losses", "focal"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r) == {"round": 1, "tunable": ["lr", "loss"], "losses": ["ce", "focal"]}
+
+
+def test_space_commit_ce_only_keeps_loss_fixed(runner, seq_jsonl, tmp_path):
+    _new(runner, seq_jsonl)
+    r = runner.invoke(app, ["space", "commit", "001", "--tunable", "lr", "--losses", "ce"])
+    assert _out(r) == {"round": 1, "tunable": ["lr"], "losses": ["ce"]}
+
+
+def test_catalog_lists_losses_with_recommendations(runner, seq_jsonl, tmp_path):
+    rows = [{"id": f"s{i}", "text": f"t{i}", "label": "1" if i % 10 == 0 else "0"} for i in range(100)]
+    _checked(runner, seq_jsonl, tmp_path, rows=rows)
+    out = _out(runner.invoke(app, ["catalog", "001"]))
+    losses = {l["name"]: l for l in out["losses"]}
+    assert list(losses) == ["ce", "focal", "asl", "rank", "ce+rank"]
+    assert all(l["help"] for l in losses.values())
+    assert losses["focal"]["recommended"] and "minority class" in losses["focal"]["reason"]
+    assert not losses["ce"]["recommended"] and losses["ce"]["always"] is True
+    assert losses["rank"]["always"] is False
 
 
 def _add_result(d, run_id, mean, std, verdict, stage="research", desc="d"):

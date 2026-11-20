@@ -38,11 +38,17 @@ you picked.
 
 ## Steps
 
-1. Run `finetune-kit catalog <exp>`. Each entry has `name`, `group`, `default`, `help`,
-   `recommended` and `reason`.
+1. Run `finetune-kit catalog <exp>`. The reply has two lists:
+   - `catalog`: the settings. Each has `name`, `group`, `default`, `help`, `recommended` and
+     `reason`.
+   - `losses`: the training losses this task can use. Each has `name`, `help`, `always` (true for
+     `ce`, which is always allowed), `recommended` and `reason`.
 
-2. **Present it grouped**, like this (★ = recommended, with the reason in a few words; the rest
-   on one line per group, names with a short plain explanation):
+   Settings and losses are two separate questions below. Ask them one at a time.
+
+2. **Present the settings grouped**, like this (★ = recommended, with the reason in a few words;
+   the rest on one line per group, names with a short plain explanation). Leave out the `loss`
+   entry itself: losses get their own question in step 4.
 
    ```
    For seq-cls on <model>, here is what can be tuned. ★ = recommended for your data.
@@ -51,43 +57,55 @@ you picked.
       ★ llrd             layer-wise LR decay: biggest single gain on earlier projects
         warmup · schedule · weight_decay · epochs · batch · head_lr_mult · clip · beta2
      Head:  pooling · head · ...
-     Loss
+     Loss settings
       ★ class_weight     labels are 18% / 82%
-      ★ loss             focal: minority class is 18% of rows
-        ...
+        label_smoothing · ...
      Regularization: dropout · ema · reinit_top · freeze_embed · fgm_eps · swa · ...
      Speed: precision (bf16) · max_len
    ```
 
-   Use the groups from the catalog; keep it compact. If the round is not the first, mark which
-   settings are already open.
+   Use the groups from the catalog; keep it compact. Settings that belong to one loss
+   (`focal_gamma`, `asl_*`, `rank_weight`, `dice_*`) are not shown here; they come up in step 5.
+   If the round is not the first, mark which settings are already open.
 
-3. **Losses.** The `loss` entry chooses the training loss. Explain the options for this task in
-   one line each:
-   - `ce`: standard cross-entropy (the default; always allowed).
-   - `focal`: focuses training on hard examples; helps with imbalanced labels.
-   - `asl` (seq-cls): asymmetric loss; pushes harder on missed positives.
-   - `rank` / `ce+rank` (seq-cls): rewards ranking positives above negatives; suits AUC-style
-     metrics.
-   - `dice` (token-cls): overlap-based; helps when entities are rare. Not with `crf`.
+3. **Ask about settings:** "Which of these may I change? Name them; anything left out stays at
+   its default. You can also say 'the starred ones'." Suggest keeping the first round short (the
+   starred ones plus a few) because every open setting costs runs; more can be opened later by
+   rerunning `{{CMD}}hparams`. Learning rate (`lr`) being open means the baseline stage runs an LR
+   scan. Wait for the answer.
 
-   Settings such as `focal_gamma`, `asl_*`, `rank_weight` and `dice_*` only matter if their loss
-   is allowed.
+4. **Ask about losses.** Show every entry of the `losses` list from step 1, one line each, with ★
+   and the reason for recommended ones, like this:
 
-4. **Ask:** "Which of these may I change? Name them; anything left out stays at its default.
-   You can also say 'the starred ones'." Suggest keeping the first round short (the starred ones
-   plus a few) because every open setting costs runs; more can be opened later by rerunning
-   `{{CMD}}hparams`. Learning rate (`lr`) being open means the baseline stage runs an LR scan.
+   ```
+   Which losses may research try? ★ = recommended for your data.
+       ce        standard cross-entropy (always allowed)
+     ★ focal     focuses on hard examples: minority class is 18% of rows
+     ★ asl       pushes harder on missed positives
+       ce+rank   cross-entropy plus ranking: pauc_hi rewards ranking quality
+       rank      rewards ranking positives above negatives
+   Say e.g. "ce, focal", or "the starred ones". Just "ce" keeps the standard loss.
+   ```
 
-5. **Confirm** the final list in one message: the tunable names and the allowed losses. If the
-   user allowed any loss besides `ce`, add `loss` to the tunable names and say so. Ask: "Commit
-   this search space?"
+   Ask: "Which losses may research try?" and wait for the answer. `ce` is always included. If
+   the round is not the first, say which losses are already allowed. For token classification,
+   `dice` cannot be combined with a `crf` head; say so if `crf` is in play.
 
-6. **Commit:** `finetune-kit space commit <exp> --tunable <a,b,c> --losses <ce,focal>`. The reply
-   shows `round`, `tunable` and `losses`. On an error (for example an unknown name), explain it,
-   correct the list with the user, and commit again.
+5. **Loss settings.** For each loss the user allowed besides `ce`, offer its own settings in one
+   line (`focal` → `focal_gamma`; `asl` → `asl_gamma_neg`, `asl_gamma_pos`, `asl_clip`; `rank` and
+   `ce+rank` → `rank_weight`; `dice` → `dice_smooth`, `dice_ce_weight`) and ask whether research
+   may change them too, or keep their defaults. Skip this step when only `ce` was chosen.
 
-7. **Write `search-space.md`** in the experiment folder from
+6. **Confirm** both lists in one message: the settings research may change, and the losses it may
+   try. If any loss besides `ce` is allowed, say that `loss` itself becomes tunable so research
+   can switch between them. Ask: "Commit this search space?"
+
+7. **Commit:** `finetune-kit space commit <exp> --tunable <a,b,c> --losses <ce,focal>`. `--losses`
+   is required, even when it is just `ce`. The reply shows `round`, `tunable` (with `loss` added
+   when a second loss is allowed) and `losses`. On an error (for example an unknown name),
+   explain it, correct the list with the user, and commit again.
+
+8. **Write `search-space.md`** in the experiment folder from
    `.finetune-kit/templates/search-space.md`: the round, each open setting and why (★ reason or
    the user's reason), the allowed losses, and what stays fixed. On a new round, keep the earlier
    rounds' history in the file and add the new round below it.
