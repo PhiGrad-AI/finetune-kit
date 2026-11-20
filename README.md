@@ -228,6 +228,11 @@ Open it in any browser.
 - **Validation / test examples:** validation examples are used to compare experiments; test
   examples are locked away and used once, at the end, for the honest final score.
 
+## Contributing
+
+Ideas, bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to
+set up the project, run the tests and propose a change.
+
 ---
 
 ## For engineers
