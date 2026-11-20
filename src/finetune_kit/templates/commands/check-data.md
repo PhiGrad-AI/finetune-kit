@@ -1,46 +1,29 @@
-# finetune-kit: check
+# finetune-kit: check-data
 
-Check the experiment's data, explain every finding in plain words, create and freeze the
-train / validation / test splits, and write `data-report.md`.
+Step 5 of 14. Check the experiment's data, explain every finding in plain words, create and
+freeze the train / validation / test splits, and write `data-report.md`.
 
 ## Before you start
 
 {{ORDER_CHECK}}
 
-## How to work in this stage
+## How to work in this step
 
-- First read `.finetune-kit/memory/research-rules.md` and follow it throughout.
-- Ask **one question at a time** and wait for the answer. Use plain language and explain any
-  ML term in a few words the first time it comes up.
-- Act only through `finetune-kit …` commands. Each prints one JSON object: read it before you
-  go on, and base what you tell the user on it, not on guesses.
-- Never edit files that finetune-kit writes (`experiment.yaml`, `search-space.yaml`,
-  `state.json`, `results.tsv`, `data-report.json`, `splits/`, `runs/`, `final/`,
-  `.finetune-kit/memory/`). Never open anything under `~/.finetune-kit/`, `~/.cache/huggingface/`
-  or `experiments/*/splits/`, and do not open the user's dataset files.
-- If a command prints `{"error": "..."}`, tell the user in plain words what went wrong and what
-  would fix it. Fix it yourself when the fix is yours to make (for example a mistyped option);
-  otherwise stop and wait for the user.
-- Training runs detach and return at once. Poll a run with
-  `finetune-kit wait <run_id> --exp <exp> --timeout 540`. If it returns `"status": "queued"` or
-  `"running"`, call it again, in a loop, until the status is `done`, `crash` or `timeout`.
-  Give the user a short progress line now and then, not after every poll.
-
-**Which experiment.** `<exp>` below is the experiment folder's number (e.g. `001`). If the user
-named one, use it. Otherwise use the highest-numbered folder in `experiments/` and say which one
-you picked.
+{{HOW_TO_WORK}}
 
 ## Steps
 
-1. Run `finetune-kit check-data <exp>`. It validates the data, splits it (if the user gave one
+1. Explain in one line what happens: finetune-kit checks the data for problems, splits it, and
+   locks the test part away; after this the data, model and goal answers can no longer change.
+   Then run `finetune-kit check-data <exp>`. It validates the data, splits it (if the user gave one
    file), moves the test split into a private vault outside the project, freezes the splits and
    writes `data-report.json`. It may take a minute the first time (it downloads the model's
    tokenizer).
 
    If the error says the splits are already frozen, the check ran before: read the existing
-   `experiments/<exp>/data-report.json` (reading is fine) and continue with step 2. Only offer
+   `experiments/<exp>/data-report.json` (reading is fine) and continue with step 2 below. Only offer
    `--resplit` if the user wants to change the data, and warn that it resets the experiment's
-   progress (bake-off, noise floor, best run).
+   progress (model comparison, starting-point measurement, best run).
 
 2. **Explain the report**, briefly and in plain words, one topic per line:
    - `n_rows`: rows in train, validation (`val`) and test.
@@ -50,7 +33,8 @@ you picked.
    - `ignored_splits`, if not empty: published splits of the dataset that were not used. Tell
      the user which ones and that they play no part.
    - `label_dist` and `minority_share`: how the labels are spread. If the smallest class is
-     rare (say under 30%), mention that the hparams stage will suggest settings for that.
+     rare (say under 30%), mention that Step 7 of 14 — Choose the loss and Step 8 of 14 — Choose
+     the settings will suggest options for that.
    - `token_len` (`p50`, `p95`, `max`) and `n_over_max_len`: text length in model tokens. Rows
      longer than the model's max length are cut off (truncated) during training; say how many,
      and whether it matters (a few rows: fine; many rows: the end of those texts is never seen,
@@ -64,7 +48,7 @@ you picked.
 
 3. **Errors.** If `errors` is not empty (or the command failed with a data error), explain each
    one, propose a concrete fix the user makes in their own data files (for example "line 512
-   has no `label`"), and stop. Tell them to rerun `{{CMD}}check` after fixing it; if the splits
+   has no `label`"), and stop. Tell them to rerun `{{CMD}}check-data` after fixing it; if the splits
    were already frozen, the rerun uses `finetune-kit check-data <exp> --resplit`.
 
 4. **Small validation set.** If a warning says the validation set is too small for the metric,
@@ -75,10 +59,10 @@ you picked.
      number of positives the warning asks for: X ≈ needed ÷ (all positives across train, val
      and test), rounded up to the next 0.05. Test stays at 10%. Above 0.3 the training set gets
      noticeably smaller: say so and let the user decide. If they agree, run it and explain the
-     new report (steps 2–3).
+     new report (steps 2–3 above).
    - If the user gave separate validation and test files, `--val-frac` does not apply: they need
-     a bigger validation file and a new experiment via `{{CMD}}setup`. Let them decide whether to
-     go on anyway.
+     a bigger validation file and a new experiment via `{{CMD}}choose-task`. Let them decide
+     whether to go on anyway.
 
 5. **Write `data-report.md`** in the experiment folder with these sections: *Summary* (two or
    three sentences), *Splits* (row counts, how they were made, that test sits in the vault),

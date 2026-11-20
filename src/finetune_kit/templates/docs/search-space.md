@@ -23,4 +23,5 @@ fixed, and why.>
 
 ## Next
 
-<Baseline (first round) or research (later rounds).>
+<Choose the learning rate and the budget, then start the experiments (first round), or
+research continues (later rounds).>

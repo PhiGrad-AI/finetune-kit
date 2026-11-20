@@ -70,6 +70,7 @@ def _plot(runs: list[dict], best_mean: float | None, bar: float | None, directio
 def render(exp_dir: Path) -> str:
     exp_dir = Path(exp_dir)
     cfg, _, _ = ex.load(exp_dir)
+    ex.require_setup(cfg)
     summary = commands.compare(exp_dir)
     runs = summary["runs"]
     direction, _ = store.metric_info(cfg, cfg.objective)

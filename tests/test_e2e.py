@@ -220,3 +220,59 @@ def test_e2e_hf_source(_env, hf_fake):
     report = json.loads((exp_dir / "data-report.json").read_text())
     assert set(report["split_origin"].values()) == {"published"}
     _noise_run_ok(name)
+
+
+def test_e2e_guided_steps(_env):
+    """Drive the CLI the way the step prompts do, asserting `next` after every answer, then a real round 2."""
+    from finetune_kit import experiment as ex
+
+    proj = _env
+    write_jsonl(proj / "data.jsonl", seq_rows())
+    assert CliRunner().invoke(app, ["init", "--ai", "claude", "--here"]).exit_code == 0
+
+    assert cli("next")["stage"] == "choose-task"
+    name = cli("new", "guided", "--task", "seq-cls")["experiment"]
+    exp_dir = proj / "experiments" / name
+    assert cli("next")["stage"] == "choose-data"
+    cli("set", "data", name, "--train", "data.jsonl")
+    assert cli("next")["stage"] == "choose-model"
+    cli("set", "model", name, "tiny-bert")
+    assert cli("next")["stage"] == "choose-goal"
+    cli("set", "goal", name, "--metric", "pauc_hi")
+    assert cli("next")["stage"] == "check-data"
+    assert cli("check-data", name)["errors"] == []
+    assert cli("next")["stage"] == "choose-loss"
+    cli("set", "losses", name, "ce")
+    assert cli("next")["stage"] == "choose-hyperparameters"
+    assert cli("space", "commit", name, "--tunable", "lr,llrd")["round"] == 1
+    out = cli("next")
+    assert out["stage"] == "choose-learning-rate"
+    cli("set", "learning-rate", name, "default")
+    assert cli("next")["stage"] == "choose-experiments"
+    cli("set", "experiments", name, "--seeds", 2, "--max-runs", 4)
+    out = cli("next")
+    assert out["stage"] == "start-experiment" and "hasn't run yet" in out["reason"]
+
+    _noise_run_ok(name)
+    out = cli("next")
+    assert out["stage"] == "start-experiment" and "still running" in out["reason"]
+    steps = cli("steps")
+    status = {s["step"]: s["status"] for s in steps["steps"]}
+    assert status["choose-experiments"] == "done" and status["start-experiment"] == "next"
+
+    # the research loop's own files, as the start-experiment and report prompts write them
+    (exp_dir / "log.md").write_text("## Summary (round 1)\nbaseline only\n")
+    assert cli("next")["stage"] == "report"
+    (exp_dir / "report.md").write_text("# report\n")
+    assert cli("next")["stage"] == "finish"
+
+    # round 2: new losses, new tunables, no re-asking of the once-only steps
+    cli("set", "losses", name, "ce,focal")
+    assert cli("next")["stage"] == "choose-hyperparameters"
+    assert cli("space", "commit", name, "--tunable", "lr,llrd,weight_decay")["round"] == 2
+    out = cli("next")
+    assert out["stage"] == "start-experiment" and "round 2" in out["reason"]
+    status = {s["step"]: s["status"] for s in cli("steps")["steps"]}
+    assert status["choose-learning-rate"] == "done" and status["choose-experiments"] == "done"
+    assert status["start-experiment"] == "next"
+    ex.verify_checksums(exp_dir, proj)

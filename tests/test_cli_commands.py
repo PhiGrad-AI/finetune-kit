@@ -660,20 +660,20 @@ def _space(d):
 
 def test_next_no_experiment_is_setup(runner, tmp_path):
     out = _next(runner)
-    assert out == {"experiment": None, "stage": "setup", "reason": "no experiment yet", "alternatives": []}
+    assert out == {"experiment": None, "stage": "choose-task", "reason": "no experiment yet", "alternatives": []}
     (tmp_path / "experiments").mkdir()
-    assert _next(runner)["stage"] == "setup"
+    assert _next(runner)["stage"] == "choose-task"
 
 
 def test_next_order_check_then_hparams(runner, seq_jsonl, tmp_path):
     assert _new(runner, seq_jsonl).exit_code == 0
     d = _exp_dir(tmp_path)
     out = _next(runner)
-    assert out["experiment"] == "001-gate" and out["stage"] == "check"
+    assert out["experiment"] == "001-gate" and out["stage"] == "check-data"
     assert out["reason"] == "data not checked and split yet"
     _splits(d)
     out = _next(runner, "001")
-    assert out["stage"] == "hparams" and out["reason"] == "no search space committed yet"
+    assert out["stage"] == "choose-loss"
 
 
 def test_next_bakeoff_before_hparams_until_locked(runner, seq_jsonl, tmp_path):
@@ -681,10 +681,10 @@ def test_next_bakeoff_before_hparams_until_locked(runner, seq_jsonl, tmp_path):
     d = _exp_dir(tmp_path)
     _splits(d)
     out = _next(runner)
-    assert out["stage"] == "bakeoff"
-    assert out["reason"] == "a bake-off was requested and no model is chosen yet"
+    assert out["stage"] == "compare-models"
+    assert out["reason"] == "a comparison was requested and no model is chosen yet"
     _set_state(d, model_locked=True)
-    assert _next(runner)["stage"] == "hparams"
+    assert _next(runner)["stage"] == "choose-loss"
 
 
 def test_next_baseline_then_research(runner, seq_jsonl, tmp_path):
@@ -693,12 +693,12 @@ def test_next_baseline_then_research(runner, seq_jsonl, tmp_path):
     _splits(d)
     _space(d)
     out = _next(runner)
-    assert out["stage"] == "baseline" and out["reason"] == "noise floor not measured yet"
+    assert out["stage"] == "choose-learning-rate"
     _set_state(d, sigma_obj=0.01, round=1)
     out = _next(runner)
-    assert out["stage"] == "research" and out["reason"] == "research round 1 is not finished"
+    assert out["stage"] == "start-experiment" and out["reason"] == "research round 1 is still running"
     (d / "log.md").write_text("# log\n## Summary (round 1)\nok\n")
-    assert _next(runner)["stage"] == "analyze"
+    assert _next(runner)["stage"] == "report"
 
 
 def test_next_research_done_then_analyze_with_alternative(runner, seq_jsonl, tmp_path):
@@ -709,18 +709,18 @@ def test_next_research_done_then_analyze_with_alternative(runner, seq_jsonl, tmp
     _set_state(d, sigma_obj=0.01, round=1)
     (d / "log.md").write_text("## Summary\n")
     out = _next(runner)
-    assert out["stage"] == "analyze" and out["reason"] == "results not analyzed yet"
-    assert out["alternatives"] == [{"stage": "hparams", "reason": "open more settings for another research round"}]
+    assert out["stage"] == "report" and out["reason"] == "results not reported yet"
+    assert out["alternatives"] == [{"stage": "choose-loss", "reason": "try other losses or settings in another round"}]
     import os
 
     (d / "report.md").write_text("r")
     t = (d / "log.md").stat().st_mtime
     os.utime(d / "report.md", (t - 10, t - 10))
-    assert _next(runner)["stage"] == "analyze"
+    assert _next(runner)["stage"] == "report"
     os.utime(d / "report.md", (t + 10, t + 10))
     out = _next(runner)
-    assert out["stage"] == "promote" and out["reason"] == "final model not trained and scored yet"
-    assert out["alternatives"] == [{"stage": "hparams", "reason": "open more settings for another research round"}]
+    assert out["stage"] == "finish" and out["reason"] == "final model not trained and scored yet"
+    assert out["alternatives"] == [{"stage": "choose-loss", "reason": "try other losses or settings in another round"}]
 
 
 def test_next_new_round_returns_research(runner, seq_jsonl, tmp_path):
@@ -732,12 +732,12 @@ def test_next_new_round_returns_research(runner, seq_jsonl, tmp_path):
     (d / "log.md").write_text("## Summary\n")
     (d / "report.md").write_text("r")
     out = _next(runner)
-    assert out["stage"] == "research" and out["reason"] == "research round 2 is not finished"
+    assert out["stage"] == "start-experiment" and out["reason"] == "research round 2 is still running"
     (d / "log.md").write_text("## Summary (round 2)\n")
     import os
 
     os.utime(d / "report.md", (1, 1))
-    assert _next(runner)["stage"] == "analyze"
+    assert _next(runner)["stage"] == "report"
 
 
 def test_next_promote_pending_then_done(runner, seq_jsonl, tmp_path):
@@ -749,10 +749,10 @@ def test_next_promote_pending_then_done(runner, seq_jsonl, tmp_path):
     (d / "log.md").write_text("## Summary\n")
     (d / "report.md").write_text("r")
     out = _next(runner)
-    assert out["stage"] == "promote" and out["reason"] == "promote is running"
+    assert out["stage"] == "finish" and out["reason"] == "the final model is being trained and scored"
     _set_state(d, promote_pending=None, promoted=True)
     out = _next(runner)
-    assert out["stage"] == "setup" and out["reason"] == "this experiment is complete; start a new one"
+    assert out["stage"] == "choose-task" and out["reason"] == "this experiment is complete; start a new one"
 
 
 def test_new_bakeoff_validated_and_saved(runner, seq_jsonl, tmp_path):
@@ -788,4 +788,531 @@ def test_next_picks_highest_numeric_prefix_and_ignores_other_folders(runner, seq
     shutil.copytree(d, root / "1000-y")
     _splits(root / "1000-y")
     out = _next(runner)
-    assert out["experiment"] == "1000-y" and out["stage"] == "hparams"
+    assert out["experiment"] == "1000-y" and out["stage"] == "choose-loss"
+
+
+# ---- step by step: new --task, set data / model / goal ----
+
+
+def _draft(runner, name="gate"):
+    return runner.invoke(app, ["new", name, "--task", "seq-cls"])
+
+
+def _cfg_of(tmp_path):
+    return ex.load(_exp_dir(tmp_path))[0]
+
+
+def test_new_task_only_writes_a_draft(runner, tmp_path):
+    r = _draft(runner)
+    assert r.exit_code == 0, r.stdout
+    assert _out(r)["experiment"] == "001-gate"
+    cfg = _cfg_of(tmp_path)
+    assert cfg.model is None and cfg.data is None and cfg.objective is None
+
+
+def test_set_data_model_goal_happy_path(runner, seq_jsonl, tmp_path):
+    _draft(runner)
+    seq_jsonl(_seq_rows())
+    r = runner.invoke(app, ["set", "data", "001", "--train", "data.jsonl"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r)["data"]["train"] == "data.jsonl"
+    r = runner.invoke(app, ["set", "model", "001", "tiny-bert"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r)["model"] == "tiny-bert"
+    r = runner.invoke(app, ["set", "goal", "001", "--metric", "macro_f1", "--guardrail", "accuracy"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r)["objective"]["metric"] == "macro_f1"
+    cfg = _cfg_of(tmp_path)
+    assert cfg.data.train == "data.jsonl" and cfg.model == "tiny-bert"
+    assert cfg.objective.metric == "macro_f1" and cfg.guardrail.metric == "accuracy"
+    assert cfg.versions["model_revision"] == "main" and ex.missing_setup(cfg) is None
+
+
+def test_set_model_with_compare_stores_bakeoff(runner, tmp_path):
+    _draft(runner)
+    r = runner.invoke(app, ["set", "model", "001", "tiny-bert", "--compare", "tiny-bert,tiny-roberta"])
+    assert r.exit_code == 0, r.stdout
+    assert _cfg_of(tmp_path).bakeoff == ["tiny-bert", "tiny-roberta"]
+
+
+def test_set_validation_errors_write_nothing(runner, seq_jsonl, tmp_path):
+    _draft(runner)
+    before = (_exp_dir(tmp_path) / "experiment.yaml").read_text()
+    r = runner.invoke(app, ["set", "data", "001", "--train", "missing.jsonl"])
+    assert r.exit_code == 2 and "not found" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "data", "001"])
+    assert r.exit_code == 2 and "--train or --source" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "model", "001", "nope"])
+    assert r.exit_code == 2 and "unknown model" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "goal", "001", "--metric", "macro_f1"])
+    assert r.exit_code == 2 and _out(r)["error"] == "choose the data first (step: choose-data)"
+    seq_jsonl(_seq_rows(30, ("a", "b", "c")))
+    assert runner.invoke(app, ["set", "data", "001", "--train", "data.jsonl"]).exit_code == 0
+    mid = (_exp_dir(tmp_path) / "experiment.yaml").read_text()
+    r = runner.invoke(app, ["set", "goal", "001", "--metric", "entity_f1"])
+    assert r.exit_code == 2 and "not valid for seq-cls" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "goal", "001", "--metric", "pr_auc"])
+    assert r.exit_code == 2 and "--positive-class" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "goal", "001", "--metric", "pr_auc", "--positive-class", "zzz"])
+    assert r.exit_code == 2 and "not a train label" in _out(r)["error"]
+    assert (_exp_dir(tmp_path) / "experiment.yaml").read_text() == mid != before
+    assert _cfg_of(tmp_path).objective is None and _cfg_of(tmp_path).model is None
+
+
+def test_set_refused_after_check(runner, seq_jsonl, tmp_path):
+    _checked(runner, seq_jsonl, tmp_path)
+    for args, what in (
+        (["data", "001", "--train", "data.jsonl"], "data"),
+        (["model", "001", "tiny-bert"], "model"),
+        (["goal", "001", "--metric", "macro_f1"], "goal"),
+    ):
+        r = runner.invoke(app, ["set", *args])
+        assert r.exit_code == 2, r.stdout
+        assert _out(r)["error"] == f"{what} is checked and locked; start a new experiment to change it"
+
+
+def test_check_data_on_draft_refused_and_writes_nothing(runner, tmp_path):
+    _draft(runner)
+    d = _exp_dir(tmp_path)
+    r = runner.invoke(app, ["check-data", "001"])
+    assert r.exit_code == 2
+    assert _out(r)["error"] == "choose the data first (step: choose-data)"
+    assert not (d / "splits").exists() and not (d / "data-report.json").exists()
+
+
+@pytest.mark.parametrize("cmdline", [
+    ["catalog", "001"], ["lr-scan", "001"], ["run", "001"], ["compare", "001"], ["report", "001"],
+    ["misses", "001", "r001"], ["promote", "001", "r001"], ["bakeoff", "001", "--models", "a,b"],
+    ["space", "commit", "001", "--tunable", "lr", "--losses", "ce"],
+])
+def test_commands_needing_setup_refuse_a_draft(runner, cmdline):
+    _draft(runner)
+    r = runner.invoke(app, cmdline)
+    assert r.exit_code == 2, r.stdout
+    assert _out(r)["error"].endswith("first (step: choose-data)")
+
+
+def test_next_does_not_crash_on_draft(runner):
+    _draft(runner)
+    r = runner.invoke(app, ["next", "001"])
+    assert r.exit_code == 0, r.stdout
+
+
+def test_one_shot_new_unchanged(runner, seq_jsonl, tmp_path):
+    r = _new(runner, seq_jsonl)
+    assert r.exit_code == 0, r.stdout
+    cfg = _cfg_of(tmp_path)
+    assert ex.missing_setup(cfg) is None and cfg.objective.metric == "macro_f1"
+    # task alone with partial one-shot options is not a silent draft
+    r = runner.invoke(app, ["new", "x", "--task", "seq-cls", "--model", "tiny-bert"])
+    assert r.exit_code == 2
+
+
+# ---- choices that can change per round: set losses / learning-rate / experiments ----
+
+
+def _state_of(tmp_path):
+    return ex.load(_exp_dir(tmp_path))[2]
+
+
+def test_set_losses_stores_in_state_not_yaml(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    before = (d / "experiment.yaml").read_text()
+    r = runner.invoke(app, ["set", "losses", "001", "focal"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r) == {"losses": ["ce", "focal"]}
+    assert _state_of(tmp_path).chosen_losses == ["ce", "focal"]
+    assert (d / "experiment.yaml").read_text() == before
+
+
+def test_set_losses_errors(runner, seq_jsonl, tmp_path):
+    _draft(runner)
+    r = runner.invoke(app, ["set", "losses", "001", "ce"])
+    assert r.exit_code == 2 and "choose the data first" in _out(r)["error"]
+    _new(runner, seq_jsonl, name="full")
+    r = runner.invoke(app, ["set", "losses", "002", "ce"])
+    assert r.exit_code == 2 and _out(r)["error"] == "check the data first (step: check-data)"
+    runner.invoke(app, ["check-data", "002"])
+    r = runner.invoke(app, ["set", "losses", "002", "nonsense"])
+    assert r.exit_code == 2 and "not allowed" in _out(r)["error"]
+    assert ex.load(tmp_path / "experiments" / "002-full")[2].chosen_losses is None
+
+
+def test_set_losses_refused_while_research_pending(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    store.new_run(d, "research", {}, [0, 1, 2], "try")
+    r = runner.invoke(app, ["set", "losses", "001", "focal"])
+    assert r.exit_code == 2 and "research" in _out(r)["error"]
+    assert _state_of(tmp_path).chosen_losses is None
+
+
+def test_space_commit_uses_chosen_losses(runner, seq_jsonl, tmp_path):
+    _checked(runner, seq_jsonl, tmp_path)
+    runner.invoke(app, ["set", "losses", "001", "focal"])
+    r = runner.invoke(app, ["space", "commit", "001", "--tunable", "lr"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r) == {"round": 1, "tunable": ["lr", "loss"], "losses": ["ce", "focal"]}
+
+
+def test_space_commit_explicit_losses_win(runner, seq_jsonl, tmp_path):
+    _checked(runner, seq_jsonl, tmp_path)
+    runner.invoke(app, ["set", "losses", "001", "focal"])
+    r = runner.invoke(app, ["space", "commit", "001", "--tunable", "lr", "--losses", "ce"])
+    assert _out(r) == {"round": 1, "tunable": ["lr"], "losses": ["ce"]}
+
+
+def test_round_two_losses_leave_checksums_passing(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    root = store.project_root(d)
+    assert runner.invoke(app, ["set", "losses", "001", "ce"]).exit_code == 0
+    assert runner.invoke(app, ["space", "commit", "001", "--tunable", "lr"]).exit_code == 0
+    store.new_run(d, "noise", {}, [0, 1, 2], "noise floor")
+    ex.record_baseline_checksums(d, store.profile_for(ex.load(d)[0], {}, root))
+    with ex.state_lock(d):
+        st = ex.load(d)[2]
+        st.sigma_obj = 0.01
+        ex.save_state(d, st)
+    r = runner.invoke(app, ["set", "losses", "001", "ce,focal"])
+    assert r.exit_code == 0, r.stdout
+    assert _state_of(tmp_path).round_open is True
+    r = runner.invoke(app, ["space", "commit", "001", "--tunable", "lr,dropout"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r)["round"] == 2 and _out(r)["losses"] == ["ce", "focal"]
+    assert _state_of(tmp_path).round_open is False
+    ex.verify_checksums(d, root)
+
+
+def test_set_learning_rate(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    r = runner.invoke(app, ["set", "learning-rate", "001", "scan"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r) == {"learning_rate": "scan"}
+    assert _state_of(tmp_path).lr_choice == "scan"
+    assert runner.invoke(app, ["set", "learning-rate", "001", "default"]).exit_code == 0
+    assert _state_of(tmp_path).lr_choice == "default"
+    r = runner.invoke(app, ["set", "learning-rate", "001", "huge"])
+    assert r.exit_code == 2 and "default or scan" in _out(r)["error"]
+    store.new_run(d, "noise", {}, [0, 1, 2], "noise floor")
+    r = runner.invoke(app, ["set", "learning-rate", "001", "scan"])
+    assert r.exit_code == 2
+    assert _out(r)["error"] == "the learning rate is fixed once the experiment has started"
+    assert _state_of(tmp_path).lr_choice == "default"
+
+
+def test_set_learning_rate_needs_checked_data(runner, seq_jsonl, tmp_path):
+    _new(runner, seq_jsonl)
+    r = runner.invoke(app, ["set", "learning-rate", "001", "scan"])
+    assert r.exit_code == 2 and _out(r)["error"] == "check the data first (step: check-data)"
+    _draft(runner, "other")
+    r = runner.invoke(app, ["set", "learning-rate", "002", "scan"])
+    assert r.exit_code == 2 and "choose the data first" in _out(r)["error"]
+
+
+def test_set_experiments_writes_budget(runner, seq_jsonl, tmp_path):
+    _new(runner, seq_jsonl)
+    r = runner.invoke(app, [
+        "set", "experiments", "001", "--max-runs", "12", "--max-hours", "3.5", "--seeds", "4", "--subset", "50",
+    ])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r) == {"max_runs": 12, "max_hours": 3.5, "seeds": 4, "subset": 50}
+    cfg = _cfg_of(tmp_path)
+    assert (cfg.budget.max_runs, cfg.budget.max_hours, cfg.seeds, cfg.research_subset) == (12, 3.5, 4, 50)
+    assert _state_of(tmp_path).budget_chosen is True
+
+
+def test_set_experiments_keeps_unspecified_values(runner, seq_jsonl, tmp_path):
+    _new(runner, seq_jsonl, "--max-runs", "9")
+    r = runner.invoke(app, ["set", "experiments", "001", "--seeds", "5"])
+    assert r.exit_code == 0, r.stdout
+    cfg = _cfg_of(tmp_path)
+    assert cfg.seeds == 5 and cfg.budget.max_runs == 9
+
+
+@pytest.mark.parametrize("args,msg", [
+    (["--seeds", "1"], "at least 2"),
+    (["--max-runs", "0"], "max-runs"),
+    (["--max-hours", "0"], "max-hours"),
+    (["--subset", "0"], "subset"),
+])
+def test_set_experiments_validation(runner, seq_jsonl, tmp_path, args, msg):
+    _new(runner, seq_jsonl)
+    before = (_exp_dir(tmp_path) / "experiment.yaml").read_text()
+    r = runner.invoke(app, ["set", "experiments", "001", *args])
+    assert r.exit_code == 2 and msg in _out(r)["error"]
+    assert (_exp_dir(tmp_path) / "experiment.yaml").read_text() == before
+    assert _state_of(tmp_path).budget_chosen is False
+
+
+def test_set_experiments_refused_on_draft_and_after_noise(runner, seq_jsonl, tmp_path):
+    _draft(runner)
+    r = runner.invoke(app, ["set", "experiments", "001", "--seeds", "3"])
+    assert r.exit_code == 2 and "choose the data first" in _out(r)["error"]
+    _new(runner, seq_jsonl, name="full")
+    d = tmp_path / "experiments" / "002-full"
+    store.new_run(d, "noise", {}, [0, 1, 2], "noise floor")
+    r = runner.invoke(app, ["set", "experiments", "002", "--seeds", "3"])
+    assert r.exit_code == 2
+    assert _out(r)["error"] == "the experiment budget is fixed once the experiment has started"
+
+
+def test_save_config_normal_mode_and_cleanup(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    cfg = ex.ExperimentConfig(name="x", task="seq-cls")
+    d = tmp_path / "e"
+    d.mkdir()
+    old = os.umask(0o022)
+    try:
+        ex.save_config(d, cfg)
+        assert stat.S_IMODE((d / "experiment.yaml").stat().st_mode) == 0o644
+    finally:
+        os.umask(old)
+
+    def boom(*a, **k):
+        raise RuntimeError("dump failed")
+
+    monkeypatch.setattr(ex.yaml, "safe_dump", boom)
+    with pytest.raises(RuntimeError):
+        ex.save_config(d, cfg)
+    assert sorted(p.name for p in d.iterdir()) == ["experiment.yaml"]
+
+
+def test_baseline_checksum_locks_budget_and_lr_before_noise_request(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    ex.record_baseline_checksums(d, store.profile_for(ex.load(d)[0], {}, store.project_root(d)))
+    assert not any(r["stage"] == "noise" for r in store.list_requests(d))
+    before = (d / "experiment.yaml").read_text()
+    r = runner.invoke(app, ["set", "experiments", "001", "--seeds", "5"])
+    assert r.exit_code == 2 and "fixed once the experiment has started" in _out(r)["error"]
+    r = runner.invoke(app, ["set", "learning-rate", "001", "scan"])
+    assert r.exit_code == 2 and "fixed once the experiment has started" in _out(r)["error"]
+    assert (d / "experiment.yaml").read_text() == before
+    ex.verify_checksums(d, store.project_root(d))
+
+
+@pytest.mark.parametrize("args,msg", [(["--max-runs", "0"], "max-runs"), (["--max-hours", "0"], "max-hours")])
+def test_new_refuses_empty_budget(runner, seq_jsonl, tmp_path, args, msg):
+    r = _new(runner, seq_jsonl, *args)
+    assert r.exit_code == 2 and msg in _out(r)["error"]
+    assert not (tmp_path / "experiments").exists()
+
+
+def test_set_losses_after_noise_opens_next_round(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    with ex.state_lock(d):
+        st = ex.load(d)[2]
+        st.sigma_obj = 0.01
+        ex.save_state(d, st)
+    assert _state_of(tmp_path).round_open is False
+    assert runner.invoke(app, ["set", "losses", "001", "ce,focal"]).exit_code == 0
+    assert _state_of(tmp_path).round_open is True
+
+
+# ---- next / steps follow the guided order ----
+
+
+def _statuses(runner, *args):
+    r = runner.invoke(app, ["steps", *args])
+    assert r.exit_code == 0, r.stdout
+    out = _out(r)
+    return out, {x["step"]: x["status"] for x in out["steps"]}
+
+
+def test_next_full_walk_fresh_experiment(runner, seq_jsonl, tmp_path):
+    _draft(runner)
+    seq_jsonl(_seq_rows())
+    d = _exp_dir(tmp_path)
+    assert _next(runner)["stage"] == "choose-data"
+    assert runner.invoke(app, ["set", "data", "001", "--train", "data.jsonl"]).exit_code == 0
+    assert _next(runner)["stage"] == "choose-model"
+    assert runner.invoke(app, ["set", "model", "001", "tiny-bert"]).exit_code == 0
+    assert _next(runner)["stage"] == "choose-goal"
+    assert runner.invoke(app, ["set", "goal", "001", "--metric", "macro_f1"]).exit_code == 0
+    assert _next(runner)["stage"] == "check-data"
+    assert runner.invoke(app, ["check-data", "001"]).exit_code == 0
+    assert _next(runner)["stage"] == "choose-loss"
+    assert runner.invoke(app, ["set", "losses", "001", "focal"]).exit_code == 0
+    assert _next(runner)["stage"] == "choose-hyperparameters"
+    _space(d)
+    out = _next(runner)
+    assert out["stage"] == "choose-learning-rate" and out["reason"] == "learning speed not chosen yet"
+    assert runner.invoke(app, ["set", "learning-rate", "001", "scan"]).exit_code == 0
+    out = _next(runner)
+    assert out["stage"] == "choose-learning-rate" and out["reason"] == "the learning-speed test hasn't finished"
+    _set_state(d, lr_scan_best=1e-4)
+    assert _next(runner)["stage"] == "choose-experiments"
+    _set_state(d, budget_chosen=True)
+    out = _next(runner)
+    assert out["stage"] == "start-experiment" and out["reason"] == "the starting-point measurement hasn't run yet"
+    store.new_run(d, "noise", {}, [0, 1, 2], "noise floor")  # queued, not finished
+    out = _next(runner)
+    assert out["stage"] == "start-experiment" and out["reason"] == "the starting-point measurement is running"
+    _set_state(d, sigma_obj=0.01, round=1)
+    out = _next(runner)
+    assert out["stage"] == "start-experiment" and out["alternatives"][0]["stage"] == "status"
+
+
+def test_next_round_two_skips_choose_loss_when_round_open(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, sigma_obj=0.01, round=1)
+    (d / "log.md").write_text("## Summary\n")
+    (d / "report.md").write_text("r")
+    assert _next(runner)["stage"] == "finish"
+    assert runner.invoke(app, ["set", "losses", "001", "focal"]).exit_code == 0
+    assert _state_of(tmp_path).round_open is True
+    assert _next(runner)["stage"] == "choose-hyperparameters"
+    _set_state(d, round_open=False)
+    assert _next(runner)["stage"] == "finish"
+
+
+def test_next_old_one_shot_experiment_after_noise(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, sigma_obj=0.01, round=1)  # no lr_choice, no budget_chosen
+    out = _next(runner)
+    assert out["stage"] == "start-experiment" and "still running" in out["reason"]
+
+
+def test_steps_statuses_at_three_points(runner, seq_jsonl, tmp_path):
+    out, st = _statuses(runner)
+    assert out["experiment"] is None and out["next"]["stage"] == "choose-task"
+    assert st["start"] == "to do" and st["choose-task"] == "next" and st["status"] == "optional"
+    assert st["compare-models"] == "optional" and st["finish"] == "to do"
+    assert [x.get("number") for x in out["steps"]][:3] == [None, 1, 2] and out["steps"][-1]["number"] == 14
+
+    _draft(runner)
+    seq_jsonl(_seq_rows())
+    assert runner.invoke(app, ["set", "data", "001", "--train", "data.jsonl"]).exit_code == 0
+    assert runner.invoke(app, ["set", "model", "001", "tiny-bert"]).exit_code == 0
+    out, st = _statuses(runner, "001")
+    assert st["start"] == "done" and st["choose-task"] == "done" and st["choose-data"] == "done"
+    assert st["choose-goal"] == "next" and st["check-data"] == "to do"
+    assert st["compare-models"] == "skipped"
+    assert runner.invoke(app, ["set", "goal", "001", "--metric", "macro_f1"]).exit_code == 0
+
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, sigma_obj=0.01, round=1, promoted=True)
+    (d / "log.md").write_text("## Summary\n")
+    (d / "report.md").write_text("r")
+    out, st = _statuses(runner)
+    assert out["next"]["stage"] == "choose-task"
+    assert all(v == "done" for k, v in st.items() if k not in ("status", "compare-models"))
+    assert st["status"] == "optional"
+
+
+def test_steps_round_two_keeps_once_only_steps_done(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, sigma_obj=0.01, round=1, lr_choice="default", budget_chosen=True)
+    (d / "log.md").write_text("## Summary\n")
+    (d / "report.md").write_text("r")
+    assert runner.invoke(app, ["set", "losses", "001", "focal"]).exit_code == 0
+    out, st = _statuses(runner)
+    assert out["next"]["stage"] == "choose-hyperparameters"
+    assert st["choose-loss"] == "done" and st["choose-hyperparameters"] == "next"
+    assert st["choose-learning-rate"] == "done" and st["choose-experiments"] == "done"
+    assert st["start-experiment"] == "to do" and st["report"] == "to do" and st["finish"] == "to do"
+    assert st["check-data"] == "done" and st["choose-goal"] == "done"
+
+
+# ---- final review fixes ----
+
+
+def test_set_losses_after_commit_before_noise_sends_back_to_settings(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    r = runner.invoke(app, ["set", "losses", "001", "ce"])
+    assert _out(r) == {"losses": ["ce"]}  # first answer: nothing to recommit
+    assert runner.invoke(app, ["space", "commit", "001", "--tunable", "lr"]).exit_code == 0
+    assert runner.invoke(app, ["set", "learning-rate", "001", "default"]).exit_code == 0
+    assert _next(runner)["stage"] == "choose-experiments"
+    r = runner.invoke(app, ["set", "losses", "001", "ce,focal"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r) == {"losses": ["ce", "focal"], "recommit": True}
+    assert _next(runner)["stage"] == "choose-hyperparameters"
+    assert runner.invoke(app, ["space", "commit", "001", "--tunable", "lr"]).exit_code == 0
+    assert ex.load(d)[1].losses == ["ce", "focal"]
+    assert _next(runner)["stage"] == "choose-experiments"
+
+
+def test_set_learning_rate_default_after_scan_drops_the_scanned_rate(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    assert runner.invoke(app, ["set", "learning-rate", "001", "scan"]).exit_code == 0
+    _set_state(d, lr_scan_best=1e-4)
+    assert runner.invoke(app, ["set", "learning-rate", "001", "default"]).exit_code == 0
+    st = _state_of(tmp_path)
+    assert st.lr_choice == "default" and st.lr_scan_best is None
+    cfg = ex.load(d)[0]
+    profile = store.profile_for(cfg, {}, store.project_root(d))
+    assert store.effective_defaults(cfg, st, profile)["lr"] == profile.lr_default
+
+
+def test_finished_scan_without_lr_choice_counts_as_chosen(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, lr_scan_best=1e-4)  # an older experiment: scan finished, lr_choice never recorded
+    assert _next(runner)["stage"] == "choose-experiments"
+    _, st = _statuses(runner)
+    assert st["choose-learning-rate"] == "done" and st["choose-experiments"] == "next"
+
+
+def test_set_experiments_sample_and_seeds_alone_leave_the_budget_open(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    r = runner.invoke(app, ["set", "experiments", "001", "--subset", "40", "--seeds", "2"])
+    assert r.exit_code == 0, r.stdout
+    cfg = _cfg_of(tmp_path)
+    assert (cfg.research_subset, cfg.seeds) == (40, 2)
+    assert _state_of(tmp_path).budget_chosen is False
+    runner.invoke(app, ["set", "losses", "001", "ce"])
+    runner.invoke(app, ["space", "commit", "001", "--tunable", "lr"])
+    runner.invoke(app, ["set", "learning-rate", "001", "default"])
+    assert _next(runner)["stage"] == "choose-experiments"
+    assert runner.invoke(app, ["set", "experiments", "001", "--max-hours", "2"]).exit_code == 0
+    assert _state_of(tmp_path).budget_chosen is True
+
+
+def test_set_experiments_without_flags_keeps_values_and_marks_chosen(runner, seq_jsonl, tmp_path):
+    _new(runner, seq_jsonl, "--max-runs", "9")
+    r = runner.invoke(app, ["set", "experiments", "001"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r)["max_runs"] == 9 and _state_of(tmp_path).budget_chosen is True
+
+
+@pytest.mark.parametrize("stage", ["lr-scan", "bakeoff"])
+def test_set_experiments_sample_and_seeds_fixed_once_training_started(runner, seq_jsonl, tmp_path, stage):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    assert runner.invoke(app, ["set", "experiments", "001", "--subset", "40"]).exit_code == 0
+    store.new_run(d, stage, {}, [0], "early training")
+    msg = ("the sample size and repeats are fixed once training has started "
+           "(the model comparison or learning-speed test used them)")
+    for args in (["--subset", "30"], ["--seeds", "4"]):
+        r = runner.invoke(app, ["set", "experiments", "001", *args])
+        assert r.exit_code == 2 and _out(r)["error"] == msg
+    cfg = _cfg_of(tmp_path)
+    assert (cfg.research_subset, cfg.seeds) == (40, 3)
+    # unchanged values and the budget itself are still fine
+    r = runner.invoke(app, ["set", "experiments", "001", "--subset", "40", "--seeds", "3", "--max-runs", "7"])
+    assert r.exit_code == 0, r.stdout
+    assert _cfg_of(tmp_path).budget.max_runs == 7 and _state_of(tmp_path).budget_chosen is True
+
+
+def test_set_model_compare_errors_name_set_model_flags(runner):
+    _draft(runner)
+    r = runner.invoke(app, ["set", "model", "001", "tiny-bert", "--compare", "tiny-bert"])
+    assert r.exit_code == 2
+    err = _out(r)["error"]
+    assert "--compare" in err and "--bakeoff" not in err and "--model" not in err
+    r = runner.invoke(app, ["new", "x", "--task", "seq-cls", "--model", "tiny-bert", "--train", "d.jsonl",
+                            "--metric", "macro_f1", "--bakeoff", "tiny-bert"])
+    assert r.exit_code == 2

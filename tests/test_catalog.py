@@ -216,4 +216,4 @@ def test_validate_config_rejects_non_finite_numbers():
 
 def test_not_tunable_hint_is_agent_neutral():
     errs = validate_config({"warmup": 0.1}, ["lr"], ["ce"], DEFAULTS, "seq-cls")
-    assert errs == ["warmup is not tunable (locked at 0.05); re-run the hparams stage to open it"]
+    assert errs == ["warmup is not tunable (locked at 0.05); open it in another round (steps choose-loss, then choose-hyperparameters)"]

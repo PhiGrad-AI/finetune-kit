@@ -90,3 +90,36 @@ def test_commit_space_new_round_resets_non_keep_streak(tmp_path):
     ex.save_state(d, state)
     assert ex.commit_space(d, space).non_keep_streak == 0
     assert ex.load(d)[2].non_keep_streak == 0
+
+
+def test_draft_config_and_missing_setup(tmp_path):
+    cfg = ex.ExperimentConfig(name="d", task="seq-cls")
+    assert cfg.model is None and cfg.data is None and cfg.objective is None
+    assert ex.missing_setup(cfg) == "choose-data"
+    cfg.data = ex.DataPaths(train="t.jsonl")
+    assert ex.missing_setup(cfg) == "choose-model"
+    cfg.model = "tiny-bert"
+    assert ex.missing_setup(cfg) == "choose-goal"
+    cfg.objective = ex.MetricRef(metric="macro_f1")
+    assert ex.missing_setup(cfg) is None
+    ex.require_setup(cfg)
+
+
+@pytest.mark.parametrize("field,msg", [
+    ("data", "choose the data first (step: choose-data)"),
+    ("model", "choose the model first (step: choose-model)"),
+    ("objective", "choose the goal first (step: choose-goal)"),
+])
+def test_require_setup_messages(field, msg):
+    cfg = _cfg()
+    setattr(cfg, field, None)
+    with pytest.raises(ValueError, match=r"^" + msg.replace("(", r"\(").replace(")", r"\)") + "$"):
+        ex.require_setup(cfg)
+
+
+def test_draft_roundtrips_and_old_yaml_loads(tmp_path):
+    d = ex.new_experiment(tmp_path, "draft", ex.ExperimentConfig(name="draft", task="token-cls"))
+    cfg, _, _ = ex.load(d)
+    assert cfg.model is None and cfg.task == "token-cls"
+    old = ex.new_experiment(tmp_path, "old", _cfg())
+    assert ex.load(old)[0].objective.metric == "f1_macro"

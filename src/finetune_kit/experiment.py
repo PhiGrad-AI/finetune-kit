@@ -65,9 +65,9 @@ class ExperimentConfig(BaseModel):
     uid: str = Field(default_factory=lambda: uuid.uuid4().hex)
     name: str
     task: Literal["seq-cls", "token-cls"]
-    model: str
-    data: DataPaths
-    objective: MetricRef
+    model: str | None = None  # model, data and objective stay unset while the experiment is a draft
+    data: DataPaths | None = None
+    objective: MetricRef | None = None
     guardrail: MetricRef | None = None
     positive_class: str | None = None
     custom_metric: CustomMetric | None = None
@@ -103,6 +103,10 @@ class State(BaseModel):
     model_locked: bool = False
     finalized: dict[str, str] = Field(default_factory=dict)  # run_id -> verdict, written by the worker
     request_hashes: dict[str, str] = Field(default_factory=dict)  # run_id -> sha256 at enqueue
+    chosen_losses: list[str] | None = None  # `set losses`; here, not in experiment.yaml, so later rounds can change it
+    lr_choice: Literal["default", "scan"] | None = None
+    budget_chosen: bool = False
+    round_open: bool = False  # a new round's losses are chosen but its search space is not committed yet
 
 
 def _slug(name: str) -> str:
@@ -111,6 +115,48 @@ def _slug(name: str) -> str:
 
 def _dump_yaml(path: Path, model: BaseModel) -> None:
     path.write_text(yaml.safe_dump(model.model_dump(mode="json"), sort_keys=False))
+
+
+_SETUP_STEPS = (
+    ("data", "choose-data", "choose the data"),
+    ("model", "choose-model", "choose the model"),
+    ("objective", "choose-goal", "choose the goal"),
+)
+
+
+def missing_setup(cfg: ExperimentConfig) -> str | None:
+    """Step name of the first unanswered setup question (data, model, goal), or None when complete."""
+    for field, step, _ in _SETUP_STEPS:
+        if getattr(cfg, field) is None:
+            return step
+    return None
+
+
+def require_setup(cfg: ExperimentConfig) -> None:
+    for field, step, what in _SETUP_STEPS:
+        if getattr(cfg, field) is None:
+            raise ValueError(f"{what} first (step: {step})")
+
+
+def save_config(exp_dir: Path, cfg: ExperimentConfig) -> None:
+    """Atomic rewrite of experiment.yaml (temp file + os.replace)."""
+    path = Path(exp_dir) / "experiment.yaml"
+    text = yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False)
+    try:
+        mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".experiment.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def new_experiment(root: Path, name: str, cfg: ExperimentConfig) -> Path:
@@ -193,6 +239,7 @@ def _commit_space(exp_dir: Path, space: SearchSpace) -> State:
         if l not in allowed:
             raise ValueError(f"loss {l!r} is not allowed for {cfg.task} (allowed: {', '.join(allowed)})")
     state.round += 1
+    state.round_open = False
     if state.round > 1:
         state.non_keep_streak = 0  # a reopened space starts a fresh run of non-keeps
     _dump_yaml(exp_dir / SPACE_FILE, space.model_copy(update={"round": state.round}))

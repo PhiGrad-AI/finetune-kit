@@ -7,7 +7,10 @@ import yaml
 from finetune_kit import guard, installer
 from finetune_kit.cli import app
 
-STAGES = ["setup", "check", "bakeoff", "hparams", "baseline", "research", "analyze", "promote"]
+STAGES = ["start", "choose-task", "choose-data", "choose-model", "choose-goal", "check-data", "compare-models",
+          "choose-loss", "choose-hyperparameters", "choose-learning-rate", "choose-experiments",
+          "start-experiment", "status", "report", "finish"]
+OLD_STAGES = ["setup", "check", "bakeoff", "hparams", "baseline", "research", "analyze", "promote"]
 GUARD = "finetune-kit _guard"
 
 
@@ -58,8 +61,8 @@ def test_init_claude_writes_skills_and_hook(tmp_path):
 
 def test_claude_skills_use_claude_invocation(tmp_path):
     installer.install(tmp_path, "claude", force=False)
-    text = (tmp_path / ".claude/skills/finetune-kit-setup/SKILL.md").read_text()
-    assert "/finetune-kit-<stage>" in text
+    text = (tmp_path / ".claude/skills/finetune-kit-start/SKILL.md").read_text()
+    assert "/finetune-kit-<step>" in text
     assert "$finetune-kit-" not in text and "/finetune-kit." not in text
 
 
@@ -117,7 +120,7 @@ def test_init_keeps_modified_rules_unless_forced(tmp_path):
 
 def test_init_overwrites_stale_kit_files(tmp_path):
     installer.install(tmp_path, "claude", force=False)
-    skill = tmp_path / ".claude/skills/finetune-kit-research/SKILL.md"
+    skill = tmp_path / ".claude/skills/finetune-kit-start-experiment/SKILL.md"
     skill.write_text("stale")
     installer.install(tmp_path, "claude", force=False)
     assert skill.read_text() != "stale"
@@ -133,10 +136,10 @@ def test_init_codex_and_cursor_paths(tmp_path):
         skill = tmp_path / ".agents/skills" / f"finetune-kit-{stage}" / "SKILL.md"
         assert _frontmatter(skill.read_text())["name"] == f"finetune-kit-{stage}"
         assert (tmp_path / ".cursor/commands" / f"finetune-kit.{stage}.md").is_file()
-    codex = (tmp_path / ".agents/skills/finetune-kit-setup/SKILL.md").read_text()
-    assert "$finetune-kit-<stage>" in codex
-    cursor = (tmp_path / ".cursor/commands/finetune-kit.setup.md").read_text()
-    assert "/finetune-kit.<stage>" in cursor
+    codex = (tmp_path / ".agents/skills/finetune-kit-start/SKILL.md").read_text()
+    assert "$finetune-kit-<step>" in codex
+    cursor = (tmp_path / ".cursor/commands/finetune-kit.start.md").read_text()
+    assert "/finetune-kit.<step>" in cursor
     mdc = (tmp_path / ".cursor/rules/finetune-kit.mdc").read_text()
     assert "alwaysApply: true" in mdc and ".finetune-kit/memory/research-rules.md" in mdc
     agents = (tmp_path / "AGENTS.md").read_text()
@@ -175,15 +178,15 @@ def test_cli_init_here(runner, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     r = runner.invoke(app, ["init", "--ai", "claude", "--here"])
     assert r.exit_code == 0, r.output
-    assert (tmp_path / ".claude/skills/finetune-kit-setup/SKILL.md").is_file()
-    assert "/finetune-kit-setup" in r.output
+    assert (tmp_path / ".claude/skills/finetune-kit-start/SKILL.md").is_file()
+    assert "/finetune-kit-start" in r.output
 
 
 def test_cli_init_new_project_dir(runner, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     r = runner.invoke(app, ["init", "proj", "--ai", "cursor"])
     assert r.exit_code == 0, r.output
-    assert (tmp_path / "proj/.cursor/commands/finetune-kit.setup.md").is_file()
+    assert (tmp_path / "proj/.cursor/commands/finetune-kit.start.md").is_file()
 
 
 def test_cli_init_bad_agent_is_json_error(runner, tmp_path, monkeypatch):
@@ -259,8 +262,19 @@ def test_guard_ignores_missing_path_and_bad_json(runner):
 
 # ---- prompt content ----
 
-PREVIOUS = {"check": "setup", "bakeoff": "check", "hparams": "check", "baseline": "hparams",
-            "research": "baseline", "analyze": "research", "promote": "analyze"}
+GATED = [s for s in STAGES if s not in ("start", "status")]
+AIS = ["claude", "codex", "cursor"]
+_PREFIX = {"claude": "/finetune-kit-", "codex": "$finetune-kit-", "cursor": "/finetune-kit."}
+_STEP_FILE = {
+    "claude": ".claude/skills/finetune-kit-<step>/SKILL.md",
+    "codex": ".agents/skills/finetune-kit-<step>/SKILL.md",
+    "cursor": ".cursor/commands/finetune-kit.<step>.md",
+}
+
+
+def test_stages_match_the_cli_steps():
+    from finetune_kit.commands import STEPS
+    assert installer.STAGES == [s["step"] for s in STEPS] == STAGES
 
 
 @pytest.mark.parametrize("stage", STAGES)
@@ -271,47 +285,172 @@ def test_command_prompts_follow_the_rules(tmp_path, stage):
     assert "one question at a time" in text
     assert "--timeout 540" in text
     assert '{"error"' in text
-    assert "~/.finetune-kit/" in text and "experiments/*/splits/" in text
-    if stage in PREVIOUS:
+    assert "~/.finetune-kit/" in text and "experiments/*/splits/" in text and "~/.cache/huggingface/" in text
+    if stage in GATED:
         before = text.split("## Before you start", 1)[1].split("## How to work", 1)[0]
         assert "finetune-kit next" in before and "Shall I start" in before
+    else:
+        assert "{{ORDER_CHECK}}" not in text and "Check the step order first" not in text
     finish = text.split("## Finish", 1)[1]
     assert "finetune-kit next" in finish and "Shall I start" in finish
+    assert "Step <number> of 14" in finish
+
+
+# Each step's own question (or command), and the questions that belong to other steps only.
+OWN = {
+    "start": ["finetune-kit steps", "Here are the steps:"],
+    "choose-task": ["Which of these fits what you want the model to do?", "finetune-kit new <name> --task"],
+    "choose-data": ["Where does your data come from?", "finetune-kit set data <exp>", "inspect-data"],
+    "choose-model": ["Which model shall we start from?", "finetune-kit set model <exp>", "--compare"],
+    "choose-goal": ["Which score should the model improve?", "finetune-kit set goal <exp>",
+                    "Is there a second score that must not get worse"],
+    "check-data": ["finetune-kit check-data <exp>"],
+    "compare-models": ["finetune-kit bakeoff choose <exp> <model>"],
+    "choose-loss": ["Which losses may research try?", "finetune-kit set losses <exp>"],
+    "choose-hyperparameters": ["Which of these may I change?", "finetune-kit space commit <exp> --tunable"],
+    "choose-learning-rate": ["Shall I use the model's usual learning speed, or run a short test",
+                             "finetune-kit set learning-rate <exp>", "finetune-kit lr-scan <exp>"],
+    "choose-experiments": ["How many experiments may research run", "finetune-kit set experiments <exp>"],
+    "start-experiment": ["finetune-kit run <exp> --stage noise", "Never ask the human whether to continue"],
+    "status": ["finetune-kit status <exp>", "finetune-kit compare <exp>", "finetune-kit steps <exp>"],
+    "report": ["finetune-kit misses <exp>", "finetune-kit report <exp>"],
+    "finish": ["finetune-kit promote <exp>", "exactly once", "answer yes"],
+}
+QUESTIONS = {
+    "choose-task": "Which of these fits what you want the model to do?",
+    "choose-data": "Where does your data come from?",
+    "choose-model": "Which model shall we start from?",
+    "choose-goal": "Which score should the model improve?",
+    "choose-loss": "Which losses may research try?",
+    "choose-hyperparameters": "Which of these may I change?",
+    "choose-learning-rate": "Shall I use the model's usual learning speed",
+    "choose-experiments": "How many experiments may research run",
+    "finish": "score the test set once? Please answer yes",
+}
+
+
+@pytest.mark.parametrize("ai", AIS)
+@pytest.mark.parametrize("stage", STAGES)
+def test_each_step_asks_only_its_own_question(stage, ai):
+    text = installer.render(stage, ai)
+    assert "{{" not in text
+    for needle in OWN[stage]:
+        assert needle in text, needle
+    for other, question in QUESTIONS.items():
+        if other != stage:
+            assert question not in text, (other, question)
+
+
+@pytest.mark.parametrize("ai", AIS)
+def test_start_lists_every_step_and_offers_the_next(ai):
+    text = installer.render("start", ai)
+    assert "finetune-kit steps" in text and "Here are the steps:" in text
+    for field in ("`number`", "`title`", "`what`"):
+        assert field in text
+    assert f"{_PREFIX[ai]}choose-task" in text
+    assert "Step <number> of 14" in text
+
+
+@pytest.mark.parametrize("ai", AIS)
+@pytest.mark.parametrize("stage", STAGES)
+def test_every_stage_ends_with_the_hand_off(stage, ai):
+    text = installer.render(stage, ai)
+    assert "{{" not in text
+    finish = text.split("## Finish", 1)[1]
+    assert "finetune-kit next" in finish and "finetune-kit steps" in finish
+    assert "Shall I start" in finish and "Step <number> of 14" in finish
+    assert f"Command: {_PREFIX[ai]}<step>" in finish
+    assert _STEP_FILE[ai] in finish
+
+
+@pytest.mark.parametrize("ai", AIS)
+def test_stage_file_matches_what_install_writes(tmp_path, ai):
+    written = {str(p.relative_to(tmp_path)) for p in installer.install(tmp_path, ai, force=False)}
+    for stage in STAGES:
+        assert _STEP_FILE[ai].replace("<step>", stage) in written
+    assert not any(n in w for w in written for n in ("_finish", "_goto", "_rules"))
+
+
+@pytest.mark.parametrize("ai", AIS)
+def test_reinit_removes_old_stage_prompts_and_keeps_user_files(tmp_path, ai):
+    for old in OLD_STAGES:  # what an earlier finetune-kit wrote
+        p = tmp_path / _STEP_FILE[ai].replace("<step>", old)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("old prompt")
+    agent_dir = tmp_path / installer.AGENTS[ai].commands
+    if installer.AGENTS[ai].kind == "skill":
+        mine = agent_dir / "finetune-kit-setup" / "my-notes.md"  # user file inside an old folder
+    else:
+        mine = agent_dir / "finetune-kit.setup.notes.md"
+    mine.write_text("mine")
+    other = agent_dir / "my-own-command.md"
+    other.write_text("mine too")
+
+    installer.install(tmp_path, ai, force=False)
+
+    for old in OLD_STAGES:
+        assert not (tmp_path / _STEP_FILE[ai].replace("<step>", old)).exists(), old
+        if installer.AGENTS[ai].kind == "skill" and old != "setup":
+            assert not (agent_dir / f"finetune-kit-{old}").exists(), old
+    assert mine.read_text() == "mine" and other.read_text() == "mine too"
+    for stage in STAGES:
+        assert (tmp_path / _STEP_FILE[ai].replace("<step>", stage)).is_file()
+
+
+def test_old_templates_are_gone():
+    root = resources.files("finetune_kit") / "templates" / "commands"
+    for old in OLD_STAGES:
+        assert not (root / f"{old}.md").is_file()
 
 
 @pytest.mark.parametrize("ai,path", [
-    ("claude", ".claude/skills/finetune-kit-setup/SKILL.md"),
-    ("codex", ".agents/skills/finetune-kit-setup/SKILL.md"),
-    ("cursor", ".cursor/commands/finetune-kit.setup.md"),
+    ("claude", ".claude/skills/finetune-kit-choose-data/SKILL.md"),
+    ("codex", ".agents/skills/finetune-kit-choose-data/SKILL.md"),
+    ("cursor", ".cursor/commands/finetune-kit.choose-data.md"),
 ])
-def test_setup_prompt_mentions_data_sources(tmp_path, ai, path):
+def test_choose_data_prompt_mentions_data_sources(tmp_path, ai, path):
     installer.install(tmp_path, ai, force=False)
     text = (tmp_path / path).read_text()
-    assert "inspect-data" in text and "--source hf:" in text
+    assert "inspect-data" in text and "--source hf:" in text and "--columns" in text
 
 
-@pytest.mark.parametrize("ai", ["claude", "codex", "cursor"])
-def test_hparams_asks_about_losses_on_its_own(ai):
-    text = installer.render("hparams", ai)
+@pytest.mark.parametrize("ai", AIS)
+def test_choose_loss_offers_catalog_losses_and_says_when_a_new_round_starts(ai):
+    text = installer.render("choose-loss", ai)
     steps = text.split("## Steps", 1)[1].split("## Finish", 1)[0]
-    settings_q = steps.index("Which of these may I change?")
-    loss_q = steps.index("Which losses may research try?")
-    confirm = steps.index("Commit this search space?")
-    assert settings_q < loss_q < confirm  # its own question, after the settings and before the commit
-    loss_step = steps[loss_q - 600:confirm]
-    assert "`losses` list" in loss_step and "★" in loss_step  # options come from the catalog
-    assert "wait" in loss_step.lower()  # one question at a time
-    assert "--losses" in steps
+    assert "`losses` list" in steps and "★" in steps
+    assert "wait" in steps.lower()
+    assert "finetune-kit set losses <exp>" in steps
+    assert "new round" in text
+    assert "Which of these may I change?" not in text
 
 
-def test_research_and_promote_specifics(tmp_path):
-    installer.install(tmp_path, "claude", force=False)
-    skills = tmp_path / ".claude/skills"
-    research = (skills / "finetune-kit-research/SKILL.md").read_text()
+def test_choose_hyperparameters_uses_the_chosen_losses():
+    text = installer.render("choose-hyperparameters", "codex")
+    assert "finetune-kit space commit <exp> --tunable" in text
+    assert "$finetune-kit-choose-loss" in text  # losses come from the step before
+    assert "Which losses may research try?" not in text
+
+
+def test_choose_learning_rate_runs_the_scan_and_waits():
+    text = installer.render("choose-learning-rate", "codex")
+    assert "finetune-kit set learning-rate <exp> default" in text
+    assert "finetune-kit set learning-rate <exp> scan" in text
+    assert "finetune-kit lr-scan <exp>" in text and "--timeout 540" in text
+
+
+def test_choose_experiments_asks_budget_seeds_and_subset():
+    text = installer.render("choose-experiments", "codex")
+    for opt in ("--max-runs", "--max-hours", "--seeds", "--subset"):
+        assert opt in text
+
+
+def test_start_experiment_and_finish_specifics():
+    research = installer.render("start-experiment", "claude")
     assert "Never ask the human whether to continue" in research
-    assert "log.md" in research and "finetune-kit compare" in research
-    promote = (skills / "finetune-kit-promote/SKILL.md").read_text()
-    assert "exactly once" in promote and "answer yes" in promote
+    assert "log.md" in research and "finetune-kit compare" in research and "--stage noise" in research
+    finish = installer.render("finish", "claude")
+    assert "exactly once" in finish and "answer yes" in finish
 
 
 def test_rules_have_keep_formula_and_stop_rule():
@@ -323,10 +462,26 @@ def test_rules_have_keep_formula_and_stop_rule():
     assert "10 non-keeps in a row" in rules
 
 
+def test_rules_name_the_new_steps_not_the_old_stages():
+    rules = _template_text("memory", "research-rules.md")
+    assert "never skip a step" in rules.lower()
+    assert "choose-hyperparameters" in rules
+    for old in ("hparams stage", "the check stage", "never skip a stage"):
+        assert old not in rules
+
+
 def test_cursor_command_frontmatter_parses(tmp_path):
     installer.install(tmp_path, "cursor", force=False)
-    fm = _frontmatter((tmp_path / ".cursor/commands/finetune-kit.research.md").read_text())
-    assert fm["description"] == installer.DESCRIPTIONS["research"]
+    fm = _frontmatter((tmp_path / ".cursor/commands/finetune-kit.start-experiment.md").read_text())
+    assert fm["description"] == installer.DESCRIPTIONS["start-experiment"]
+
+
+def test_descriptions_cover_every_step_in_plain_words():
+    assert set(installer.DESCRIPTIONS) == set(STAGES)
+    assert "doesn't know where to start" in installer.DESCRIPTIONS["start"]
+    for d in installer.DESCRIPTIONS.values():
+        assert ": " not in d  # plain YAML scalar in the frontmatter
+        assert "\n" not in d and d.startswith(tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
 
 
 @pytest.mark.parametrize("settings", [{"hooks": []}, {"hooks": {"PreToolUse": {}}}, {"hooks": {"PreToolUse": [{"hooks": 5}]}}])
@@ -337,63 +492,35 @@ def test_init_rejects_malformed_settings_shapes(tmp_path, settings):
         installer.install(tmp_path, "claude", force=False)
 
 
-# ---- stage hand-off ----
-
-_PREFIX = {"claude": "/finetune-kit-", "codex": "$finetune-kit-", "cursor": "/finetune-kit."}
-_STAGE_FILE = {
-    "claude": ".claude/skills/finetune-kit-<stage>/SKILL.md",
-    "codex": ".agents/skills/finetune-kit-<stage>/SKILL.md",
-    "cursor": ".cursor/commands/finetune-kit.<stage>.md",
-}
-
-
-@pytest.mark.parametrize("ai", ["claude", "codex", "cursor"])
-@pytest.mark.parametrize("stage", STAGES)
-def test_every_stage_ends_with_the_hand_off(stage, ai):
-    text = installer.render(stage, ai)
-    assert "{{" not in text
-    assert "finetune-kit next" in text
-    assert "Shall I start" in text
-    assert _PREFIX[ai] in text
-    assert _STAGE_FILE[ai] in text
-
-
-@pytest.mark.parametrize("ai", ["claude", "codex", "cursor"])
-def test_stage_file_matches_what_install_writes(tmp_path, ai):
-    written = {str(p.relative_to(tmp_path)) for p in installer.install(tmp_path, ai, force=False)}
-    for stage in STAGES:
-        assert _STAGE_FILE[ai].replace("<stage>", stage) in written
-    assert not any("_finish" in w or "_goto" in w for w in written)
+def test_agents_md_and_cursor_rules_list_the_steps(tmp_path):
+    installer.install(tmp_path, "codex", force=False)
+    installer.install(tmp_path, "cursor", force=False)
+    agents = (tmp_path / "AGENTS.md").read_text()
+    mdc = (tmp_path / ".cursor/rules/finetune-kit.mdc").read_text()
+    assert "$finetune-kit-start" in agents and "/finetune-kit.start" in mdc
+    for text in (agents, mdc):
+        assert "choose-hyperparameters" in text and "hparams" not in text
 
 
 def test_research_summary_names_its_round():
-    assert "## Summary (round" in installer.render("research", "codex")
+    assert "## Summary (round" in installer.render("start-experiment", "codex")
 
 
-def test_setup_passes_bakeoff_to_new():
-    assert "--bakeoff" in installer.render("setup", "codex")
-
-
-def test_bakeoff_reads_the_cli_not_prose():
-    text = installer.render("bakeoff", "codex")
+def test_compare_models_reads_the_cli_not_prose():
+    text = installer.render("compare-models", "codex")
     assert "the `bakeoff` field of `experiment.yaml`" in text
-    assert "Late bake-off" in text and "bakeoff choose <exp> <model>" in text
-    assert "prose" not in text and "experiment.md`. If the user did **not**" not in text
+    assert "bakeoff choose <exp> <model>" in text
+    assert "prose" not in text
 
 
 def test_finish_says_what_to_do_on_no_and_requires_a_yes():
-    text = installer.render("check", "codex").split("## Finish", 1)[1]
+    text = installer.render("check-data", "codex").split("## Finish", 1)[1]
     assert "If the user says no, stop" in text
-    assert "Never start a stage the user has not agreed to" in text
+    assert "Never start a step the user has not agreed to" in text
 
 
 def test_order_check_handles_a_missing_experiment():
-    assert "no argument" in installer.render("check", "codex").split("## How to work", 1)[0]
-
-
-def test_rules_forbid_skipping_a_stage():
-    rules = _template_text("memory", "research-rules.md").lower()
-    assert "never skip a stage" in rules
+    assert "no argument" in installer.render("check-data", "codex").split("## How to work", 1)[0]
 
 
 def _template_text(*parts):
@@ -406,39 +533,139 @@ def _before(stage, ai="codex"):
     return installer.render(stage, ai).split("## Before you start", 1)[1].split("## How to work", 1)[0]
 
 
-@pytest.mark.parametrize("ai", ["claude", "codex", "cursor"])
-def test_hparams_order_check_is_conditional(ai):
-    before = _before("hparams", ai)
-    assert "This is the `hparams` stage." in before
+@pytest.mark.parametrize("ai", AIS)
+def test_choose_hyperparameters_order_check_is_conditional(ai):
+    before = _before("choose-hyperparameters", ai)
+    assert "This is the `choose-hyperparameters` step." in before
     flat = " ".join(before.split())
-    assert ("If `stage` is `hparams` or a later stage (`baseline`, `research`, `analyze` or "
-            "`promote`), continue with this stage") in flat
-    assert ("Otherwise, if `stage` is an earlier stage, do not start this stage: that stage is not "
-            "done yet. Earlier stages: `setup`, `check` or `bakeoff`.") in flat
-    assert "finetune-kit next <exp>" in before and "Shall I start <stage> now?" in before
-    # the hand-off is a branch of the check, never an unconditional instruction
-    assert "Go to the stage that comes first" not in before
+    assert ("If `stage` is `choose-hyperparameters` or a later step (`choose-learning-rate`, "
+            "`choose-experiments`, `start-experiment`, `report` or `finish`), continue with this step") in flat
+    assert ("Otherwise, if `stage` is an earlier step, do not start this step: that step is not "
+            "done yet. Earlier steps: `choose-task`, `choose-data`, `choose-model`, `choose-goal`, "
+            "`check-data`, `compare-models` or `choose-loss`.") in flat
+    assert "finetune-kit next <exp>" in before and "Shall I start" in before
+    assert "Step <number> of 14" in before
 
 
-@pytest.mark.parametrize("stage", [s for s in STAGES if s != "setup"])
-def test_every_order_check_names_its_stage_and_gates_on_no_write_up(stage):
+@pytest.mark.parametrize("stage", GATED)
+def test_every_order_check_names_its_step_and_gates_on_no_write_up(stage):
     before = _before(stage)
-    assert f"This is the `{stage}` stage." in before
-    assert "Otherwise, if `stage` is an earlier stage" in before
-    assert "must exist" not in before
+    assert f"This is the `{stage}` step." in before
     assert "{{" not in before
+    if stage != "choose-task":  # choose-task alone first checks that finetune-kit is installed
+        assert "must exist" not in before
+        assert "Otherwise, if `stage` is an earlier step" in before
 
 
-def test_promote_goes_on_only_when_next_names_promote():
-    before = " ".join(_before("promote").split())
-    assert "continue with this stage only if `stage` is exactly `promote`" in before
-    assert "If `stage` is `promote` or a later stage" not in before
+def test_finish_goes_on_only_when_next_names_finish():
+    before = " ".join(_before("finish").split())
+    assert "continue with this step only if `stage` is exactly `finish`" in before
+    assert "If `stage` is `finish` or a later step" not in before
 
 
-def test_analyze_interim_names_the_round():
-    assert "`## Summary (round N)`" in installer.render("analyze", "codex")
+def test_report_interim_names_the_round():
+    assert "`## Summary (round N)`" in installer.render("report", "codex")
 
 
-def test_bakeoff_after_baseline_needs_a_new_experiment():
-    text = installer.render("bakeoff", "codex")
+def test_compare_models_after_start_needs_a_new_experiment():
+    text = installer.render("compare-models", "codex")
     assert "needs a new experiment" in text and "`bakeoff choose` will refuse" in text
+
+
+def test_choose_task_with_an_experiment_in_progress_asks_first():
+    text = installer.render("choose-task", "codex")
+    assert "in progress" in text and "new experiment" in text
+
+
+# ---- fix round 1 ----
+
+@pytest.mark.parametrize("ai", AIS)
+def test_choose_hyperparameters_sends_a_new_round_to_choose_loss(ai):
+    text = installer.render("choose-hyperparameters", ai)
+    before = " ".join(text.split("## How to work", 1)[0].split())
+    assert "A new round always starts with the loss question." in before
+    assert "If `next.stage` from the order check is `choose-hyperparameters`, a new round is open" in before
+    assert "Do not ask about settings and do not commit anything here" in before
+    assert f"Next: Step 7 of 14 — Choose the loss (a new round starts with the loss question). Command: {_PREFIX[ai]}choose-loss" in before
+    assert "after choose-loss" in installer.DESCRIPTIONS["choose-hyperparameters"]
+
+
+def test_descriptions_do_not_overlap_on_starting():
+    d = installer.DESCRIPTIONS
+    assert "doesn't know where to start" in d["start"] and "overview" in d["start"]
+    assert "begin a new experiment" in d["choose-task"]
+    assert "once the setup steps are done" in d["start-experiment"]
+
+
+def test_status_checks_install_and_never_starts_a_second_loop():
+    text = installer.render("status", "codex")
+    before = text.split("## Before you start", 1)[1].split("## How to work", 1)[0]
+    assert "research-rules.md` must exist" in before and "finetune-kit version" in before
+    flat = " ".join(text.split())
+    assert "Never offer to start a second research loop while one runs" in flat
+    assert "If step 5 above found research running, do not offer any step" in flat
+    assert "$finetune-kit-start-experiment` resumes it" in flat
+
+
+@pytest.mark.parametrize("stage", [s for s in STAGES if s != "start"])  # start explains its own list
+def test_inner_and_global_step_references_are_distinct(stage):
+    import re
+    text = installer.render(stage, "codex")
+    flat = " ".join(l for l in text.splitlines() if not l.startswith("#")).split()
+    flat = " ".join(flat)
+    # an inner step is "step N below/above/of the loop"; a global one is "Step N of 14"
+    for m in re.finditer(r"\b[Ss]teps? \d+(?:[–-]\d+)?", flat):
+        assert flat[m.end():].startswith((" of 14", " below", " above", " of the loop")), \
+            (stage, flat[m.start() - 40:m.end() + 20])
+
+
+def test_init_message_explains_why_rules_are_kept(runner, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    installer.install(tmp_path, "claude", force=False)
+    (tmp_path / ".finetune-kit/memory/research-rules.md").write_text("older wording")
+    r = runner.invoke(app, ["init", "--ai", "claude", "--here"])
+    assert r.exit_code == 0, r.output
+    assert "experiments check it for changes" in r.output and "New projects get the updated wording" in r.output
+    assert "your edited" not in r.output
+    assert (tmp_path / ".finetune-kit/memory/research-rules.md").read_text() == "older wording"
+
+
+@pytest.mark.parametrize("stage", ["compare-models", "choose-learning-rate"])
+def test_first_training_asks_sample_size_and_repeats_early(stage):
+    text = installer.render(stage, "codex")
+    steps = " ".join(text.split("## Steps", 1)[1].split("## Finish", 1)[0].split())
+    assert "n_rows.train" in steps and "5,000 rows" in steps
+    assert "smaller sample" in steps and "How many repeats per experiment?" in steps
+    assert "finetune-kit set experiments <exp> --subset <rows> --seeds <N>" in steps
+    # the early question comes before the training command
+    first_training = "finetune-kit bakeoff <exp> --models" if stage == "compare-models" else "finetune-kit lr-scan <exp>"
+    assert steps.index("set experiments") < steps.index(first_training)
+
+
+def test_choose_experiments_shows_fixed_sample_and_repeats():
+    text = " ".join(installer.render("choose-experiments", "codex").split())
+    assert "already fixed" in text and "lr-scan" in text and "bakeoff" in text
+    assert "n_rows.train" in text
+
+
+def test_choose_loss_sends_a_recommit_to_the_settings_step():
+    text = " ".join(installer.render("choose-loss", "codex").split())
+    assert '"recommit": true' in text and "Step 8 of 14 — Choose the settings" in text
+
+
+@pytest.mark.parametrize("stage", STAGES)
+def test_prompt_lines_are_wrapped(stage):
+    raw = (resources.files("finetune_kit") / "templates" / "commands" / f"{stage}.md").read_text()
+    for line in raw.splitlines():
+        if "Step " in line and " of 14" in line and not line.lstrip().startswith("`"):
+            assert len(line) <= 102, (stage, line)
+        assert line.strip() not in ("whether to", "the", "below)."), (stage, line)
+
+
+def test_init_message_says_how_to_update_the_rules(runner, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    installer.install(tmp_path, "claude", force=False)
+    (tmp_path / ".finetune-kit/memory/research-rules.md").write_text("older wording")
+    r = runner.invoke(app, ["init", "--ai", "claude", "--here"])
+    assert r.exit_code == 0, r.output
+    assert "init again with --force" in r.output and "no experiment is mid-research" in r.output
