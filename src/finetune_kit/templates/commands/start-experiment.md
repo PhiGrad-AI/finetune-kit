@@ -83,6 +83,10 @@ Repeat:
    settings that only make sense together (for example `loss: "focal"` with `focal_gamma`, or
    `llrd` with an adjusted `lr`). Rules:
    - Only names in `search-space.yaml` `tunable`; only losses in its `losses`.
+   - The user chose those losses to experiment with: every one in `compare`'s `losses_untried`
+     gets a run (with its own settings, for example `focal_gamma`) before research stops. Try
+     them early, right after the learning rate. `stop` stays `false` while any are untried and
+     budget is left.
    - Never repeat a config that is already in `runs`; never rerun a crashed config unchanged.
    - Pick values yourself, inside sensible ranges; the CLI rejects nonsense.
 

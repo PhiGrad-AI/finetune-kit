@@ -31,7 +31,7 @@ DESCRIPTIONS = {
     "choose-goal": "Step 4 of 14. Choose the score to improve and an optional score that must not get worse. Use when the user talks about the metric, what a good result is, or which mistakes matter most.",
     "check-data": "Step 5 of 14. Check the data for problems and split it into training, validation and a locked-away test part. Use when the user asks to check, validate or split their training data.",
     "compare-models": "Step 6 of 14. Train the 2-3 chosen models side by side and keep the best one. Use when the user asked to compare models or wants a model bake-off.",
-    "choose-loss": "Step 7 of 14. Choose which losses (ways of measuring mistakes) research may try, or start another round with other losses. Use when the user asks about losses or wants to try more after a report.",
+    "choose-loss": "Step 7 of 14. Choose the losses (ways of measuring mistakes) to experiment with; research tries each and keeps the best, or start another round with other losses. Use when the user asks about losses or wants to try more after a report.",
     "choose-hyperparameters": "Step 8 of 14, after choose-loss. Choose which training settings (hyperparameters) research may change. Use when the user asks what can be tuned; to open more settings in a new round, start with choose-loss.",
     "choose-learning-rate": "Step 9 of 14. Use the model's usual learning rate or run a short test to find a better one. Use when the user asks about the learning rate or learning speed.",
     "choose-experiments": "Step 10 of 14. Choose how many experiments and hours research may use, seeds per experiment and an optional smaller subset. Use when the user talks about budget, time or how many runs.",

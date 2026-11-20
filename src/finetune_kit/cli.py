@@ -463,9 +463,9 @@ def set_goal(
 @set_app.command("losses")
 def set_losses(
     exp: str = typer.Argument(..., help="Experiment: number, name or path."),
-    losses: str = typer.Argument(..., help="Comma-separated losses research may try (ce is always allowed)."),
+    losses: str = typer.Argument(..., help="Comma-separated losses to experiment with (ce is always included); each gets at least one run."),
 ) -> None:
-    """Choose which losses research may try. After the noise run this opens a new round."""
+    """Choose the losses to experiment with. After the noise run this opens a new round."""
     from finetune_kit import commands as cmd
 
     with _errors():
@@ -627,7 +627,7 @@ def space_commit(
     tunable: str = typer.Option(..., "--tunable", help="Comma-separated hyperparameter names."),
     losses: Optional[str] = typer.Option(
         None, "--losses",
-        help="Comma-separated losses research may try (ce is always allowed; defaults to `set losses`).",
+        help="Comma-separated losses to experiment with (ce is always included; defaults to `set losses`).",
     ),
 ) -> None:
     """Commit (or re-commit, next round) the tunable hyperparameters and losses."""
@@ -638,7 +638,7 @@ def space_commit(
         chosen = ex.load(exp_dir)[2].chosen_losses if losses is None else None
         if chosen is None and (losses is None or not losses.strip()):
             raise ValueError(
-                "--losses is required: say which losses research may try (e.g. --losses ce or ce,focal)"
+                "--losses is required: say which losses to experiment with (e.g. --losses ce,focal,asl)"
             )
         if chosen is not None:
             losses = ",".join(chosen)

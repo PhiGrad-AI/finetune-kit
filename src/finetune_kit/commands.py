@@ -285,7 +285,7 @@ def _checked_setup(exp_dir: Path) -> ex.ExperimentConfig:
 
 
 def set_losses(exp_dir: Path, losses: list[str]) -> dict:
-    """Which losses research may try. Kept in state.json so a later round can change it freely."""
+    """Which losses to experiment with. Kept in state.json so a later round can change it freely."""
     exp_dir = Path(exp_dir)
     with ex.state_lock(exp_dir):
         cfg = _checked_setup(exp_dir)
@@ -488,7 +488,7 @@ def result_rows(exp_dir: Path) -> list[dict]:
 
 def compare(exp_dir: Path) -> dict:
     exp_dir = Path(exp_dir)
-    cfg, _, state = ex.load(exp_dir)
+    cfg, space, state = ex.load(exp_dir)
     ex.require_setup(cfg)
     _, metric_delta = store.metric_info(cfg, cfg.objective)
     min_delta = cfg.min_delta if cfg.min_delta is not None else metric_delta
@@ -499,6 +499,11 @@ def compare(exp_dir: Path) -> dict:
         "runs": cfg.budget.max_runs - state.runs_used,
         "hours": round(cfg.budget.max_hours - state.hours_used, 3),
     }
+    rows = result_rows(exp_dir)
+    # every loss the user chose to experiment with gets at least one run before a streak may stop research
+    tried = {r["config"].get("loss", "ce") for r in rows}
+    untried = [l for l in (space.losses if space else []) if l != "ce" and l not in tried]
+    out_of_budget = budget["runs"] <= 0 or budget["hours"] <= 0
     return {
         "best": state.best_run,
         "noise": {
@@ -506,9 +511,10 @@ def compare(exp_dir: Path) -> dict:
             "keep_bar": bar,
         },
         "streak": state.non_keep_streak,
-        "stop": state.non_keep_streak >= STREAK_STOP or budget["runs"] <= 0 or budget["hours"] <= 0,
+        "stop": out_of_budget or (state.non_keep_streak >= STREAK_STOP and not untried),
+        "losses_untried": untried,
         "budget_left": budget,
-        "runs": result_rows(exp_dir),
+        "runs": rows,
     }
 
 
@@ -618,7 +624,7 @@ STEPS = [
     {"step": "choose-goal", "title": "Choose the goal", "what": "Say what counts as a good result and how it is scored"},
     {"step": "check-data", "title": "Check the data", "what": "Look the data over for problems, then set aside examples to test with"},
     {"step": "compare-models", "title": "Compare models", "what": "Try the models you picked side by side and keep the best one"},
-    {"step": "choose-loss", "title": "Choose the loss", "what": "Pick which ways of measuring mistakes training may try"},
+    {"step": "choose-loss", "title": "Choose the loss", "what": "Pick the losses (ways of measuring mistakes) to experiment with"},
     {"step": "choose-hyperparameters", "title": "Choose the settings", "what": "Pick which training settings research may change"},
     {"step": "choose-learning-rate", "title": "Choose the learning speed", "what": "Use the model's usual learning speed, or run a short test to find a better one"},
     {"step": "choose-experiments", "title": "Choose how much to try", "what": "Decide how many experiments to run and how long they may take"},
@@ -670,7 +676,7 @@ def next_stage(root: Path, exp_dir: Path | None) -> dict:
         return out("compare-models", "a comparison was requested and no model is chosen yet")
     if not (exp_dir / ex.SPACE_FILE).is_file() or state.round_open:
         if state.chosen_losses is None:
-            return out("choose-loss", "which losses research may try is not chosen yet")
+            return out("choose-loss", "the losses to experiment with are not chosen yet")
         return out("choose-hyperparameters", "no search space committed yet")
     if state.sigma_obj is None:
         if state.lr_choice is None and state.lr_scan_best is None:  # a finished scan counts as chosen

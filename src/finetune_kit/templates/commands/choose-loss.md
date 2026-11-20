@@ -1,8 +1,10 @@
 # finetune-kit: choose-loss
 
-Step 7 of 14. Ask which losses research may try and record them. A loss is how training measures
+Step 7 of 14. Ask which losses to experiment with and record them. A loss is how training measures
 the model's mistakes; some losses suit imbalanced data or "never miss a positive" goals better
-than the standard one.
+than the standard one. The loss is a hyperparameter like any other: the user picks a **set** of
+losses to compare, not one winner. Research gives every chosen loss at least one run and keeps
+whichever scores best.
 
 ## Before you start
 
@@ -29,21 +31,26 @@ the next step you choose the settings for this round." Go on only if they want a
    reason for recommended ones, like this:
 
    ```
-   Which losses may research try? ★ = recommended for your data.
+   Which losses should we experiment with? Pick as many as you like; each gets tried and the
+   best one wins. ★ = recommended for your data.
        ce        standard cross-entropy (always allowed)
      ★ focal     focuses on hard examples: minority class is 18% of rows
      ★ asl       pushes harder on missed positives
        ce+rank   cross-entropy plus ranking: pauc_hi rewards ranking quality
        rank      rewards ranking positives above negatives
-   Say e.g. "ce, focal", or "the starred ones". Just "ce" keeps the standard loss.
+   Say e.g. "ce, focal, asl", "the starred ones" or "all of them".
    ```
 
-   Ask: "Which losses may research try?" and wait for the answer. `ce` is always included. If
+   Ask: "Which losses should we experiment with?" and wait for the answer. Do not ask the user
+   to choose a single loss, and do not pick one for them: this is a list of candidates.
+   Suggest `ce` plus the ★ ones as a starting set. `ce` is always included as the baseline. If
+   the user picks only `ce`, confirm once that this means no loss experiments. If
    this is a new round, say which losses were allowed before. For token classification, `dice`
    cannot be combined with a `crf` head; say so if `crf` is in play.
 
 3. **Record it.** Run `finetune-kit set losses <exp> <ce,focal>`. The reply shows `losses`. If
-   any loss besides `ce` is allowed, say that research may switch between them. On an error (for
+   any loss besides `ce` is chosen, say that research will run each of them at least once and
+   keep the one that scores best. On an error (for
    example an unknown name), explain it, correct the list with the user, and run it again.
    If the reply also has `"recommit": true` before the experiments have started, the settings
    were already committed with the old losses: tell the user that Step 8 of 14 — Choose the

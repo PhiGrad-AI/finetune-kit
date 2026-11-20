@@ -219,6 +219,25 @@ def test_compare_stop_flag(runner, results_exp):
     assert out["stop"] is True and out["budget_left"]["runs"] == 0
 
 
+def test_compare_keeps_going_until_every_chosen_loss_is_tried(runner, results_exp):
+    ex.commit_space(results_exp, ex.SearchSpace(round=0, tunable=["lr", "loss"], losses=["ce", "focal", "asl"]))
+    _, _, st = ex.load(results_exp)
+    st.non_keep_streak = 10
+    ex.save_state(results_exp, st)
+    out = _out(runner.invoke(app, ["compare", "001"]))
+    assert out["losses_untried"] == ["focal", "asl"] and out["stop"] is False
+    store.append_result(results_exp, {
+        "run_id": "r004", "round": 1, "stage": "research", "objective_mean": 0.8, "objective_std": 0.01,
+        "guardrail_mean": None, "n_seeds": 3, "minutes": 1.5, "verdict": "discard", "description": "d",
+        "config": json.dumps({"loss": "focal"}),
+    })
+    out = _out(runner.invoke(app, ["compare", "001"]))
+    assert out["losses_untried"] == ["asl"] and out["stop"] is False
+    st.runs_used = 40  # the budget still wins
+    ex.save_state(results_exp, st)
+    assert _out(runner.invoke(app, ["compare", "001"]))["stop"] is True
+
+
 def test_report_writes_html(runner, results_exp):
     r = runner.invoke(app, ["report", "001"])
     assert r.exit_code == 0, r.stdout
