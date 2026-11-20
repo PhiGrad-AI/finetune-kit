@@ -61,7 +61,7 @@ step is one small decision. You do not need to know the commands: the agent asks
 | 4 | Choose the goal (`choose-goal`) | Say what counts as a good result and how it is scored |
 | 5 | Check the data (`check-data`) | Look the data over for problems, then set aside examples to test with |
 | 6 | Compare models (`compare-models`) | Try the models you picked side by side and keep the best one |
-| 7 | Choose the loss (`choose-loss`) | Pick which ways of measuring mistakes training may try |
+| 7 | Choose the loss (`choose-loss`) | Pick the losses (ways of measuring mistakes) to experiment with; each gets tried |
 | 8 | Choose the settings (`choose-hyperparameters`) | Pick which training settings research may change |
 | 9 | Choose the learning speed (`choose-learning-rate`) | Use the model's usual learning speed, or run a short test to find a better one |
 | 10 | Choose how much to try (`choose-experiments`) | Decide how many experiments to run and how long they may take |

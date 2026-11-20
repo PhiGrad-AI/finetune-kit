@@ -306,7 +306,7 @@ OWN = {
                     "Is there a second score that must not get worse"],
     "check-data": ["finetune-kit check-data <exp>"],
     "compare-models": ["finetune-kit bakeoff choose <exp> <model>"],
-    "choose-loss": ["Which losses may research try?", "finetune-kit set losses <exp>"],
+    "choose-loss": ["Which losses should we experiment with?", "finetune-kit set losses <exp>"],
     "choose-hyperparameters": ["Which of these may I change?", "finetune-kit space commit <exp> --tunable"],
     "choose-learning-rate": ["Shall I use the model's usual learning speed, or run a short test",
                              "finetune-kit set learning-rate <exp>", "finetune-kit lr-scan <exp>"],
@@ -321,7 +321,7 @@ QUESTIONS = {
     "choose-data": "Where does your data come from?",
     "choose-model": "Which model shall we start from?",
     "choose-goal": "Which score should the model improve?",
-    "choose-loss": "Which losses may research try?",
+    "choose-loss": "Which losses should we experiment with?",
     "choose-hyperparameters": "Which of these may I change?",
     "choose-learning-rate": "Shall I use the model's usual learning speed",
     "choose-experiments": "How many experiments may research run",
@@ -429,7 +429,7 @@ def test_choose_hyperparameters_uses_the_chosen_losses():
     text = installer.render("choose-hyperparameters", "codex")
     assert "finetune-kit space commit <exp> --tunable" in text
     assert "$finetune-kit-choose-loss" in text  # losses come from the step before
-    assert "Which losses may research try?" not in text
+    assert "Which losses should we experiment with?" not in text
 
 
 def test_choose_learning_rate_runs_the_scan_and_waits():
