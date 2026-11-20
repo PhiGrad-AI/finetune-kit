@@ -428,7 +428,7 @@ def set_data(
 def set_model(
     exp: str = typer.Argument(..., help="Experiment: number, name or path."),
     model: str = typer.Argument(..., help="Model profile key (see `models`)."),
-    compare: Optional[str] = typer.Option(None, "--compare", help="2-3 model keys a,b[,c] to bake off; the first is MODEL."),
+    compare: Optional[str] = typer.Option(None, "--compare", help="1-2 other model keys to compare with MODEL (MODEL,b[,c] or b[,c])."),
 ) -> None:
     """Choose the model (and, with --compare, the models to bake off). Refused once check-data has run."""
     from finetune_kit import commands as cmd
@@ -725,7 +725,8 @@ def init(
     typer.echo(f"finetune-kit installed for {agent.label} in {root.resolve()} ({len(written)} files written).")
     if installer.rules_kept(root):
         typer.echo(f"Kept the existing {installer.RULES}: experiments check it for changes, so init does not "
-                   "replace it. New projects get the updated wording.")
+                   "replace it. New projects get the updated wording. To update it, run init again "
+                   "with --force once no experiment is mid-research (finished ones then fail their tamper check).")
     typer.echo(f"Next: open {agent.label} in this project and run {agent.invoke}start")
 
 

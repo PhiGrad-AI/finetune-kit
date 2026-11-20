@@ -68,7 +68,7 @@ def validate_data(
     return data_cfg, data.label_map(train_rows, task)
 
 
-def validate_model(root: Path, task: str, model: str, bakeoff: list[str] | None):
+def validate_model(root: Path, task: str, model: str, bakeoff: list[str] | None, bakeoff_error: str | None = None):
     from finetune_kit.profiles import load_profiles
 
     profiles = load_profiles(root)
@@ -80,7 +80,7 @@ def validate_model(root: Path, task: str, model: str, bakeoff: list[str] | None)
         if not (2 <= len(bakeoff) <= 3) or len(set(bakeoff)) != len(bakeoff) or bakeoff[0] != model or any(
             k not in profiles or task not in profiles[k].tasks for k in bakeoff
         ):
-            raise ValueError(f"--bakeoff needs 2-3 models for {task}, the first being --model")
+            raise ValueError(bakeoff_error or f"--bakeoff needs 2-3 models for {task}, the first being --model")
     return profiles[model]
 
 
@@ -230,7 +230,10 @@ def set_data(
 def set_model(exp_dir: Path, model: str, compare: list[str] | None = None) -> dict:
     def change(cfg, root):
         bakeoff = list(dict.fromkeys([model, *compare])) if compare else None
-        profile = validate_model(root, cfg.task, model, bakeoff)
+        profile = validate_model(
+            root, cfg.task, model, bakeoff,
+            f"--compare needs 1-2 other {cfg.task} models besides {model}, or {model} plus 1-2 others",
+        )
         return cfg.model_copy(update={
             "model": model, "bakeoff": bakeoff, "versions": store.current_versions(profile),
         })
@@ -294,10 +297,14 @@ def set_losses(exp_dir: Path, losses: list[str]) -> dict:
             if l not in allowed:
                 raise ValueError(f"loss {l!r} is not allowed for {cfg.task} (allowed: {', '.join(allowed)})")
         state.chosen_losses = ["ce"] + [l for l in dict.fromkeys(losses) if l != "ce"]
+        recommit = False
         if state.sigma_obj is not None:
-            state.round_open = True  # after the noise run this starts a new round
+            state.round_open = recommit = True  # after the noise run this starts a new round
+        elif (exp_dir / ex.SPACE_FILE).is_file() and not _noise_started(exp_dir, state):
+            # the settings were committed with the old losses: commit them again before the experiments start
+            state.round_open = recommit = True
         ex.save_state(exp_dir, state)
-    return {"losses": state.chosen_losses}
+    return {"losses": state.chosen_losses, **({"recommit": True} if recommit else {})}
 
 
 def set_learning_rate(exp_dir: Path, choice: str) -> dict:
@@ -310,6 +317,8 @@ def set_learning_rate(exp_dir: Path, choice: str) -> dict:
         if _noise_started(exp_dir, state):
             raise ValueError("the learning rate is fixed once the experiment has started")
         state.lr_choice = choice
+        if choice == "default":
+            state.lr_scan_best = None  # training reads the scanned rate whenever it is set
         ex.save_state(exp_dir, state)
     return {"learning_rate": choice}
 
@@ -324,6 +333,14 @@ def set_experiments(
         ex.require_setup(cfg)
         if _noise_started(exp_dir, state):
             raise ValueError("the experiment budget is fixed once the experiment has started")
+        changes_sample = (subset is not None and subset != cfg.research_subset) or (
+            seeds is not None and seeds != cfg.seeds
+        )
+        if changes_sample and any(r["stage"] in ("lr-scan", "bakeoff") for r in store.list_requests(exp_dir)):
+            raise ValueError(
+                "the sample size and repeats are fixed once training has started "
+                "(the model comparison or learning-speed test used them)"
+            )
         runs = cfg.budget.max_runs if max_runs is None else max_runs
         hours = cfg.budget.max_hours if max_hours is None else max_hours
         n_seeds = cfg.seeds if seeds is None else seeds
@@ -334,8 +351,11 @@ def set_experiments(
             "budget": ex.Budget(max_runs=runs, max_hours=hours),
         })
         ex.save_config(exp_dir, cfg)
-        state.budget_chosen = True
-        ex.save_state(exp_dir, state)
+        # Sample size and seeds alone can be asked early (before the first training); the budget
+        # counts as chosen only when it is answered, or when the call keeps every current value.
+        if max_runs is not None or max_hours is not None or (seeds is None and subset is None):
+            state.budget_chosen = True
+            ex.save_state(exp_dir, state)
     return {"max_runs": runs, "max_hours": hours, "seeds": n_seeds, "subset": n_subset}
 
 
@@ -653,7 +673,7 @@ def next_stage(root: Path, exp_dir: Path | None) -> dict:
             return out("choose-loss", "which losses research may try is not chosen yet")
         return out("choose-hyperparameters", "no search space committed yet")
     if state.sigma_obj is None:
-        if state.lr_choice is None:
+        if state.lr_choice is None and state.lr_scan_best is None:  # a finished scan counts as chosen
             return out("choose-learning-rate", "learning speed not chosen yet")
         if state.lr_choice == "scan" and state.lr_scan_best is None:
             return out("choose-learning-rate", "the learning-speed test hasn't finished")

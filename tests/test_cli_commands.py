@@ -1223,3 +1223,96 @@ def test_steps_round_two_keeps_once_only_steps_done(runner, seq_jsonl, tmp_path)
     assert st["choose-learning-rate"] == "done" and st["choose-experiments"] == "done"
     assert st["start-experiment"] == "to do" and st["report"] == "to do" and st["finish"] == "to do"
     assert st["check-data"] == "done" and st["choose-goal"] == "done"
+
+
+# ---- final review fixes ----
+
+
+def test_set_losses_after_commit_before_noise_sends_back_to_settings(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    r = runner.invoke(app, ["set", "losses", "001", "ce"])
+    assert _out(r) == {"losses": ["ce"]}  # first answer: nothing to recommit
+    assert runner.invoke(app, ["space", "commit", "001", "--tunable", "lr"]).exit_code == 0
+    assert runner.invoke(app, ["set", "learning-rate", "001", "default"]).exit_code == 0
+    assert _next(runner)["stage"] == "choose-experiments"
+    r = runner.invoke(app, ["set", "losses", "001", "ce,focal"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r) == {"losses": ["ce", "focal"], "recommit": True}
+    assert _next(runner)["stage"] == "choose-hyperparameters"
+    assert runner.invoke(app, ["space", "commit", "001", "--tunable", "lr"]).exit_code == 0
+    assert ex.load(d)[1].losses == ["ce", "focal"]
+    assert _next(runner)["stage"] == "choose-experiments"
+
+
+def test_set_learning_rate_default_after_scan_drops_the_scanned_rate(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    assert runner.invoke(app, ["set", "learning-rate", "001", "scan"]).exit_code == 0
+    _set_state(d, lr_scan_best=1e-4)
+    assert runner.invoke(app, ["set", "learning-rate", "001", "default"]).exit_code == 0
+    st = _state_of(tmp_path)
+    assert st.lr_choice == "default" and st.lr_scan_best is None
+    cfg = ex.load(d)[0]
+    profile = store.profile_for(cfg, {}, store.project_root(d))
+    assert store.effective_defaults(cfg, st, profile)["lr"] == profile.lr_default
+
+
+def test_finished_scan_without_lr_choice_counts_as_chosen(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, lr_scan_best=1e-4)  # an older experiment: scan finished, lr_choice never recorded
+    assert _next(runner)["stage"] == "choose-experiments"
+    _, st = _statuses(runner)
+    assert st["choose-learning-rate"] == "done" and st["choose-experiments"] == "next"
+
+
+def test_set_experiments_sample_and_seeds_alone_leave_the_budget_open(runner, seq_jsonl, tmp_path):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    r = runner.invoke(app, ["set", "experiments", "001", "--subset", "40", "--seeds", "2"])
+    assert r.exit_code == 0, r.stdout
+    cfg = _cfg_of(tmp_path)
+    assert (cfg.research_subset, cfg.seeds) == (40, 2)
+    assert _state_of(tmp_path).budget_chosen is False
+    runner.invoke(app, ["set", "losses", "001", "ce"])
+    runner.invoke(app, ["space", "commit", "001", "--tunable", "lr"])
+    runner.invoke(app, ["set", "learning-rate", "001", "default"])
+    assert _next(runner)["stage"] == "choose-experiments"
+    assert runner.invoke(app, ["set", "experiments", "001", "--max-hours", "2"]).exit_code == 0
+    assert _state_of(tmp_path).budget_chosen is True
+
+
+def test_set_experiments_without_flags_keeps_values_and_marks_chosen(runner, seq_jsonl, tmp_path):
+    _new(runner, seq_jsonl, "--max-runs", "9")
+    r = runner.invoke(app, ["set", "experiments", "001"])
+    assert r.exit_code == 0, r.stdout
+    assert _out(r)["max_runs"] == 9 and _state_of(tmp_path).budget_chosen is True
+
+
+@pytest.mark.parametrize("stage", ["lr-scan", "bakeoff"])
+def test_set_experiments_sample_and_seeds_fixed_once_training_started(runner, seq_jsonl, tmp_path, stage):
+    d, _ = _checked(runner, seq_jsonl, tmp_path)
+    assert runner.invoke(app, ["set", "experiments", "001", "--subset", "40"]).exit_code == 0
+    store.new_run(d, stage, {}, [0], "early training")
+    msg = ("the sample size and repeats are fixed once training has started "
+           "(the model comparison or learning-speed test used them)")
+    for args in (["--subset", "30"], ["--seeds", "4"]):
+        r = runner.invoke(app, ["set", "experiments", "001", *args])
+        assert r.exit_code == 2 and _out(r)["error"] == msg
+    cfg = _cfg_of(tmp_path)
+    assert (cfg.research_subset, cfg.seeds) == (40, 3)
+    # unchanged values and the budget itself are still fine
+    r = runner.invoke(app, ["set", "experiments", "001", "--subset", "40", "--seeds", "3", "--max-runs", "7"])
+    assert r.exit_code == 0, r.stdout
+    assert _cfg_of(tmp_path).budget.max_runs == 7 and _state_of(tmp_path).budget_chosen is True
+
+
+def test_set_model_compare_errors_name_set_model_flags(runner):
+    _draft(runner)
+    r = runner.invoke(app, ["set", "model", "001", "tiny-bert", "--compare", "tiny-bert"])
+    assert r.exit_code == 2
+    err = _out(r)["error"]
+    assert "--compare" in err and "--bakeoff" not in err and "--model" not in err
+    r = runner.invoke(app, ["new", "x", "--task", "seq-cls", "--model", "tiny-bert", "--train", "d.jsonl",
+                            "--metric", "macro_f1", "--bakeoff", "tiny-bert"])
+    assert r.exit_code == 2
