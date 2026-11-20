@@ -9,9 +9,9 @@ than the standard one.
 {{ORDER_CHECK}}
 
 **A new round?** If the experiments have already started (Step 11 of 14 — Run the experiments has
-run; `finetune-kit compare <exp>` shows a `noise.sigma_obj`), choosing losses now starts a new round of research. Read the
-`round` in `experiments/<exp>/search-space.yaml` (reading is fine) and tell the user before you
-ask anything: "This starts round N+1. The best run so far, the starting-point measurement and the
+run; `finetune-kit compare <exp>` shows a `noise.sigma_obj`), choosing losses now starts a new
+round of research. Read the `round` in `experiments/<exp>/search-space.yaml` (reading is fine)
+and tell the user before you ask anything: "This starts round N+1. The best run so far, the starting-point measurement and the
 remaining budget carry over; research continues from the current best with the new choices. In
 the next step you choose the settings for this round." Go on only if they want a new round.
 
@@ -45,6 +45,9 @@ the next step you choose the settings for this round." Go on only if they want a
 3. **Record it.** Run `finetune-kit set losses <exp> <ce,focal>`. The reply shows `losses`. If
    any loss besides `ce` is allowed, say that research may switch between them. On an error (for
    example an unknown name), explain it, correct the list with the user, and run it again.
+   If the reply also has `"recommit": true` before the experiments have started, the settings
+   were already committed with the old losses: tell the user that Step 8 of 14 — Choose the
+   settings comes next, to commit them again so the new losses are used.
 
 4. **Note it** for `search-space.md`: the next step writes that file with the allowed losses and
    why (★ reason or the user's reason).

@@ -1,8 +1,8 @@
 # finetune-kit: report
 
-Step 13 of 14. Explain what the research found: the best recipe against the baseline, what helped and what
-hurt, what to open next, and an error analysis of the best run's validation mistakes. Write
-`report.md`; finetune-kit writes `report.html`.
+Step 13 of 14. Explain what the research found: the best recipe against the baseline, what
+helped and what hurt, what to open next, and an error analysis of the best run's validation
+mistakes. Write `report.md`; finetune-kit writes `report.html`.
 
 ## Before you start
 

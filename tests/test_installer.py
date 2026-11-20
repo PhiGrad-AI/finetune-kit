@@ -628,3 +628,44 @@ def test_init_message_explains_why_rules_are_kept(runner, tmp_path, monkeypatch)
     assert "experiments check it for changes" in r.output and "New projects get the updated wording" in r.output
     assert "your edited" not in r.output
     assert (tmp_path / ".finetune-kit/memory/research-rules.md").read_text() == "older wording"
+
+
+@pytest.mark.parametrize("stage", ["compare-models", "choose-learning-rate"])
+def test_first_training_asks_sample_size_and_repeats_early(stage):
+    text = installer.render(stage, "codex")
+    steps = " ".join(text.split("## Steps", 1)[1].split("## Finish", 1)[0].split())
+    assert "n_rows.train" in steps and "5,000 rows" in steps
+    assert "smaller sample" in steps and "How many repeats per experiment?" in steps
+    assert "finetune-kit set experiments <exp> --subset <rows> --seeds <N>" in steps
+    # the early question comes before the training command
+    first_training = "finetune-kit bakeoff <exp> --models" if stage == "compare-models" else "finetune-kit lr-scan <exp>"
+    assert steps.index("set experiments") < steps.index(first_training)
+
+
+def test_choose_experiments_shows_fixed_sample_and_repeats():
+    text = " ".join(installer.render("choose-experiments", "codex").split())
+    assert "already fixed" in text and "lr-scan" in text and "bakeoff" in text
+    assert "n_rows.train" in text
+
+
+def test_choose_loss_sends_a_recommit_to_the_settings_step():
+    text = " ".join(installer.render("choose-loss", "codex").split())
+    assert '"recommit": true' in text and "Step 8 of 14 — Choose the settings" in text
+
+
+@pytest.mark.parametrize("stage", STAGES)
+def test_prompt_lines_are_wrapped(stage):
+    raw = (resources.files("finetune_kit") / "templates" / "commands" / f"{stage}.md").read_text()
+    for line in raw.splitlines():
+        if "Step " in line and " of 14" in line and not line.lstrip().startswith("`"):
+            assert len(line) <= 102, (stage, line)
+        assert line.strip() not in ("whether to", "the", "below)."), (stage, line)
+
+
+def test_init_message_says_how_to_update_the_rules(runner, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    installer.install(tmp_path, "claude", force=False)
+    (tmp_path / ".finetune-kit/memory/research-rules.md").write_text("older wording")
+    r = runner.invoke(app, ["init", "--ai", "claude", "--here"])
+    assert r.exit_code == 0, r.output
+    assert "init again with --force" in r.output and "no experiment is mid-research" in r.output

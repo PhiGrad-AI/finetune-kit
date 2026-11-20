@@ -62,8 +62,7 @@ freeze the train / validation / test splits, and write `data-report.md`.
      new report (steps 2–3 above).
    - If the user gave separate validation and test files, `--val-frac` does not apply: they need
      a bigger validation file and a new experiment via `{{CMD}}choose-task`. Let them decide
-     whether to
-     go on anyway.
+     whether to go on anyway.
 
 5. **Write `data-report.md`** in the experiment folder with these sections: *Summary* (two or
    three sentences), *Splits* (row counts, how they were made, that test sits in the vault),

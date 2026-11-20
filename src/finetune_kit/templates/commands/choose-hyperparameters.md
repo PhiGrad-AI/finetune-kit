@@ -2,8 +2,8 @@
 
 Step 8 of 14. Show which training settings (hyperparameters) can be tuned for this task and
 model, with recommendations, let the user say which ones research may change (names only; you
-pick the values later), commit that search space with the losses chosen in Step 7 of 14 — Choose the loss, and write
-`search-space.md`.
+pick the values later), commit that search space with the losses chosen in Step 7 of 14 — Choose
+the loss, and write `search-space.md`.
 
 ## Before you start
 
@@ -68,14 +68,14 @@ experiments have already started (it shows a `noise.sigma_obj`):
    may change them too, or keep their defaults. Wait for the answer. Skip this when only `ce` was
    allowed.
 
-5. **Confirm** in one message: the settings research may change, and the losses chosen in Step 7 of
-   14 — Choose the loss.
+5. **Confirm** in one message: the settings research may change, and the losses chosen in
+   Step 7 of 14 — Choose the loss.
    If any loss besides `ce` is allowed, say that `loss` itself becomes tunable so research can
    switch between them. Ask: "Commit this search space?" and wait.
 
-6. **Commit:** `finetune-kit space commit <exp> --tunable <a,b,c>`. The losses chosen in Step 7 of
-   14 — Choose the loss are used. If it says `--losses is required`, no losses were chosen yet: offer
-   `{{CMD}}choose-loss` first. The reply shows `round`, `tunable` (with `loss` added when a
+6. **Commit:** `finetune-kit space commit <exp> --tunable <a,b,c>`. The losses chosen in
+   Step 7 of 14 — Choose the loss are used. If it says `--losses is required`, no losses were
+   chosen yet: offer `{{CMD}}choose-loss` first. The reply shows `round`, `tunable` (with `loss` added when a
    second loss is allowed) and `losses`. On an error (for example an unknown name), explain it,
    correct the list with the user, and commit again.
 

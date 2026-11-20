@@ -96,11 +96,13 @@ file, so you can drive the same flow by hand.
 
 - `finetune-kit new NAME --task seq-cls|token-cls` creates a draft experiment; the answers go in
   one at a time: `set data EXP --train FILE` (or `--source hf:...`), `set model EXP MODEL
-  [--compare a,b,c]`, `set goal EXP --metric M [--guardrail M]`, then `check-data EXP`. The older
+  [--compare MODEL,b[,c]]`, `set goal EXP --metric M [--guardrail M]`, then `check-data EXP`. The older
   one-shot form (`new` with `--model`, `--train`, `--metric`) still works.
 - `set losses EXP ce,focal`, then `space commit EXP --tunable lr,llrd` (a first-round commit with
   no `--losses` uses the ones from `set losses`), `set learning-rate EXP default|scan`, and
-  `set experiments EXP [--max-runs N] [--max-hours H] [--seeds N] [--subset N]`.
+  `set experiments EXP [--max-runs N] [--max-hours H] [--seeds N] [--subset N]`. On a big
+  dataset `--subset`/`--seeds` alone are asked before the first training (model comparison or
+  learning-rate scan) and are fixed once it has run; the budget is asked later.
 - `run`, `wait`, `compare`, `misses`, `report` and `promote` run and read the experiments.
 - `finetune-kit steps [EXP]` prints every step with its status (`done`, `next`, `to do`,
   `optional`, `skipped`), its number and its plain-language title.

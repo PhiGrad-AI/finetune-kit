@@ -20,8 +20,7 @@ plain words and use the hand-off in the Finish section.
 
 1. **Resume check.** Run `finetune-kit status <exp>` and `finetune-kit compare <exp>`. If an
    `lr-scan` run is queued or running, the test was started before: wait for those runs (step 4
-   below).
-   If `runs` already has `lr-scan` rows and none is pending, go to step 5 below.
+   below). If `runs` already has `lr-scan` rows and none is pending, go to step 5 below.
 
 2. **Explain**, in plain words: the learning rate is how big a step the model takes each time it
    learns from a batch of examples. Too big and training becomes unstable; too small and it
@@ -36,11 +35,27 @@ plain words and use the hand-off in the Finish section.
 
 3. **Ask:** "Shall I use the model's usual learning speed, or run a short test to find one?"
    Wait for the answer.
-   - Usual value: run `finetune-kit set learning-rate <exp> default`, then go to step 6 below. If
-     the
-     model's notes say "generic: lr-scan required", warn first that its usual value is only a
-     guess, and go on only if the user still wants it.
-   - Test: run `finetune-kit set learning-rate <exp> scan`, then `finetune-kit lr-scan <exp>`. It
+   - Usual value: run `finetune-kit set learning-rate <exp> default`, then go to step 6 below.
+     If the model's notes say "generic: lr-scan required", warn first that its usual value is
+     only a guess, and go on only if the user still wants it.
+   - Test: first, **sample size and repeats.** These two answers are fixed once any training
+     has run, and the test trains the model. Read `n_rows.train` in
+     `experiments/<exp>/data-report.json` (reading is fine; never read the data rows). Ask only if
+     it is more than 5,000 rows and the *Seeds per run* and *Research subset* rows of
+     `experiment.md` are not filled in yet; otherwise skip to the next paragraph. Ask one question
+     at a time, in plain words, and wait for each answer:
+     - "Use a smaller sample of N rows for the experiments, so each one goes faster?" (suggest
+       about 3,000 rows; the final model is still trained on all the data at the end).
+     - "How many repeats per experiment?" (each experiment is trained this many times with
+       different random starts and averaged, because one run alone can be lucky; default 3, at
+       least 2).
+     Record both with `finetune-kit set experiments <exp> --subset <rows> --seeds <N>` (leave out
+     `--subset` if they want all the data), and fill in those two rows of `experiment.md`. The
+     number of experiments and hours is still asked later, in Step 10 of 14 — Choose how much
+     to try. If `set experiments` says the sample size and repeats are fixed, an earlier training
+     already used them: say so and go on.
+
+     Then run `finetune-kit set learning-rate <exp> scan`, then `finetune-kit lr-scan <exp>`. It
      returns `run_ids` and `lrs`.
 
 4. **Wait** for each run id in turn with the wait loop.
