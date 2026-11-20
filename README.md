@@ -29,8 +29,7 @@ Works with **Claude Code**, **Codex** and **Cursor**. Your data never leaves you
   ```
 
   You don't need to install Python yourself; uv fetches Python 3.12 if needed.
-- Access to this GitHub repository (it is private), with git signed in to GitHub, for example
-  with `gh auth login`.
+- `git`, which uv uses to download finetune-kit from GitHub (no GitHub account needed).
 - Your examples, as a CSV, JSONL or Parquet file, or the name of a Hugging Face dataset
   (see [Your data](#your-data)).
 
@@ -201,8 +200,8 @@ Open it in any browser.
   the wrong agent. Run `finetune-kit init --ai codex` (or `--ai cursor`) in the folder again.
 - **The step commands don't appear in the agent.** Make sure you ran `init` in the same folder the
   agent has open, then restart the agent.
-- **`uv tool install` asks for a password or says the repository was not found.** The repository
-  is private: check you can open it on GitHub, and sign git in with `gh auth login`.
+- **`uv tool install` says git is not found.** Install git (on a Mac, run `xcode-select --install`),
+  then run the install line again.
 - **Updating to the latest version.** Run the install line again with `--force` added after
   `install`, then run `init` again in your project.
 - **The session ended in the middle.** Type the start command again; it continues from the files.
