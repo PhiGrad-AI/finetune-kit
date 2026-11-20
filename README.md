@@ -1,35 +1,49 @@
 # finetune-kit
 
-Noise-aware autoresearch for BERT-family encoders. Your coding agent (Claude Code, Codex or
-Cursor) acts as the researcher: it picks hyperparameters, queues runs, reads results and decides
-what to try next. `finetune-kit` is its toolbox: a trainer, a run queue, a metric registry and a
-keep rule that the agent cannot override.
+**Train your own text classifier by answering questions.** You bring examples (for instance
+emails labelled "spam" or "not spam"), your AI coding agent asks you a few plain questions, runs
+the experiments on your computer and tells you what worked. At the end you get a trained model
+and a one-line command to use it on new text.
 
-**Why.** One fine-tuning run varies by several points from seed to seed, so a single "better"
-run proves nothing. finetune-kit compares multi-seed means against a measured noise floor, keeps
-the test set out of reach until the end, and leaves a reviewable file behind at every step. The
-output is a final recipe backed by multi-seed evidence, not a lucky seed.
+You don't need to know machine learning. Every choice is explained as it comes up, with a
+recommendation, and you can always answer "use the recommended one".
 
-Tasks: sequence classification (binary or multi-class) and token classification (NER). Runs
-locally on CUDA, Apple MPS or CPU, one job at a time. Experiment data never leaves the machine.
+Works with **Claude Code**, **Codex** and **Cursor**. Your data never leaves your machine.
 
-## Install
+## What it can do
+
+- **Sort text into categories** ("sequence classification"): spam or not, which department a
+  ticket belongs to, positive or negative review, prompt injection or safe.
+- **Find things inside text** ("token classification", also called NER): names, places,
+  phone numbers, product codes.
+
+## What you need
+
+- A Mac or Linux computer (Windows is untested). An NVIDIA GPU or an Apple Silicon Mac (M1 or later) makes
+  training much faster; a plain CPU works but is slow (see [How long it takes](#how-long-it-takes)).
+- One of the AI agents above, installed and signed in.
+- `uv`, a Python installer. If you don't have it:
+
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+
+  You don't need to install Python yourself; uv fetches Python 3.12 if needed.
+- Access to this GitHub repository (it is private), with git signed in to GitHub, for example
+  with `gh auth login`.
+- Your examples, as a CSV, JSONL or Parquet file, or the name of a Hugging Face dataset
+  (see [Your data](#your-data)).
+
+## Quick start
+
+**1. Install** (once per computer):
 
 ```bash
-uv tool install git+<repo>        # once per machine; provides the `finetune-kit` command
+uv tool install "git+https://github.com/PhiGrad-AI/finetune-kit"
 ```
 
-Requires Python 3.12 or newer. Torch and transformers are installed with the tool.
-
-## Set up
-
-In your project directory:
-
-```bash
-finetune-kit init --ai <agent>
-```
-
-Pick the `--ai` value for the agent you use:
+**2. Set up a project folder.** Make a folder for this work, open a terminal in it and run the
+line for your agent:
 
 | Agent | Command |
 |---|---|
@@ -40,9 +54,7 @@ Pick the `--ai` value for the agent you use:
 If you are an AI agent installing this for a user, choose the value for the agent you are
 yourself; do not copy a value from an example.
 
-## How to use it
-
-Open your agent in the project and start with the first step:
+**3. Start.** Open your agent in that folder and type:
 
 | Agent | Type this |
 |---|---|
@@ -50,8 +62,32 @@ Open your agent in the project and start with the first step:
 | Codex | `$finetune-kit-start` |
 | Cursor | `/finetune-kit.start` |
 
-The agent shows you every step in plain words, then walks you through them one at a time. Each
-step is one small decision. You do not need to know the commands: the agent asks, you answer.
+The agent lists the steps, then asks the first question. From here on you just answer.
+
+## Your first run: a worked example
+
+Want to try it before using your own data? This uses a public dataset of movie reviews labelled
+positive or negative (about 10,000 short reviews). Answer the steps like this:
+
+| Step | What to say |
+|---|---|
+| Choose the task | "Sort text into categories" |
+| Choose the data | "Use the Hugging Face dataset `cornell-movie-review-data/rotten_tomatoes`" |
+| Choose the model | "Use the recommended one" |
+| Choose the goal | "Accuracy" |
+| Check the data | "Looks good, continue" |
+| Choose the loss | "ce and the starred ones" |
+| Choose the settings | "Use the recommended ones" |
+| Choose the learning speed | "Use the default" |
+| Choose how much to try | "10 experiments, 2 hours", and "yes" to training on a sample |
+| Run the experiments | "Go" |
+
+Then come back later, ask for the report, and finish.
+
+## The steps
+
+The agent walks you through these one at a time. Each step is one small decision, and each one
+ends by telling you the next step and its command.
 
 | # | Step (command suffix) | What you decide |
 |---|---|---|
@@ -81,6 +117,18 @@ the session ends, type `/finetune-kit-start` again: the agent picks up where the
 are. To try another round after the report (new losses or settings), start again from step 7;
 the starting point, learning speed and budget carry over.
 
+Each step ends by offering the next one, with its command (for example
+`/finetune-kit-choose-data`), and asks whether to continue in the same conversation. The agent
+never starts a step without your yes and never skips one; if you say no, type the command
+whenever you like. If a step is started too early, it hands you to the step that comes first.
+
+**Taking a break.** You can close the agent at any time. Everything is saved in files; type the
+start command again and the agent picks up where you left off.
+
+**Trying more.** After the report, you can start another round with other losses or settings:
+start again from step 7. The best result so far, the learning speed and the remaining budget
+carry over.
+
 Where the commands are installed (after `init`):
 
 | Agent | Invocation | Installed under |
@@ -89,7 +137,112 @@ Where the commands are installed (after `init`):
 | Codex | `$finetune-kit-<step>` | `.agents/skills/` |
 | Cursor | `/finetune-kit.<step>` | `.cursor/commands/` |
 
-## For engineers: the CLI
+## Your data
+
+The simplest form is a CSV file with one example per row: a column with the text and a column
+with its label.
+
+```csv
+text,label
+"Win a free cruise, click now",spam
+"Can we move the meeting to 3pm?",not spam
+```
+
+- **Columns named differently?** That's fine; the agent looks at your file and asks which column
+  is which. It reads only column names and counts, never your rows.
+- **How many examples?** A few hundred per label is a reasonable minimum; a few thousand is better.
+- **Already split into train / validation / test?** Give all three and they are used as they are.
+  Otherwise the agent splits one file for you (80% to learn from, 10% to check progress, 10% kept
+  aside for the final score).
+- **Hugging Face datasets** work too: give the name, such as `cornell-movie-review-data/rotten_tomatoes`.
+  The dataset's own train, validation and test splits are used. For a private dataset, sign in
+  first with `hf auth login`.
+- **Finding things inside text** needs a different shape (a list of words and a tag for each); see
+  [Data formats](#data-formats).
+
+## How long it takes
+
+Each experiment trains the model a few times (once per seed) to make sure a result is real and
+not luck. Rough guide for a base-size model on a few thousand examples:
+
+- **NVIDIA GPU:** a few minutes per experiment.
+- **Apple Silicon Mac:** several minutes to tens of minutes per experiment.
+- **CPU only:** an hour or more per experiment. Use a sample and a small budget, or a GPU.
+
+In the *Choose how much to try* step you set a limit on the number of experiments and hours, and
+on large datasets the agent offers to experiment on a sample to go faster. Research also stops on
+its own when ten experiments in a row bring no real improvement. Experiments keep running while
+you do other things; check on them with the *Check progress* step.
+
+## What you get at the end
+
+The *Finish* step trains the final model, scores it once on the examples kept aside, and puts
+everything in `experiments/<your-experiment>/final/`:
+
+- `model/`: the trained model.
+- `predict.py`: a small script to use it. Put new rows in a JSONL file (one `{"text": "..."}` per
+  line) and run:
+
+  ```bash
+  python predict.py --input new_rows.jsonl --output scores.jsonl
+  ```
+
+  Each output row has the predicted `label` and a `score`. It needs only `torch` and
+  `transformers`, not finetune-kit, so you can copy the `final/` folder anywhere.
+- `test_metrics.json`: the final score on the examples the model never saw.
+- `recipe.json`: the exact settings that won, so the result can be reproduced.
+
+The report (`report.html`, step 13) shows every experiment that was tried and why the winner won.
+Open it in any browser.
+
+## Troubleshooting
+
+- **The agent says to "open Claude Code" but you use Codex or Cursor.** The project was set up for
+  the wrong agent. Run `finetune-kit init --ai codex` (or `--ai cursor`) in the folder again.
+- **The step commands don't appear in the agent.** Make sure you ran `init` in the same folder the
+  agent has open, then restart the agent.
+- **`uv tool install` asks for a password or says the repository was not found.** The repository
+  is private: check you can open it on GitHub, and sign git in with `gh auth login`.
+- **Updating to the latest version.** Run the install line again with `--force` added after
+  `install`, then run `init` again in your project.
+- **The session ended in the middle.** Type the start command again; it continues from the files.
+- **Stopping the experiments.** Interrupt the agent (Esc or Ctrl+C). The experiment already
+  running finishes; no new ones start. Start *Run the experiments* again later to continue.
+- **A Hugging Face dataset won't load.** For private or gated datasets, sign in with
+  `hf auth login` first. finetune-kit never asks for your token.
+
+## Words you'll see
+
+- **Model:** a pre-trained language model (like RoBERTa or DeBERTa) that already understands
+  language; training teaches it your labels.
+- **Goal (metric):** the score that decides which experiment is best, such as accuracy.
+- **Loss:** how training measures the model's mistakes. Some losses handle rare labels better.
+  You pick several to compare; each gets tried.
+- **Settings (hyperparameters):** knobs on training, like how many passes over the data or how
+  large each batch is. You pick which ones research may change.
+- **Learning rate (learning speed):** how big a step the model takes each time it learns; the most
+  important setting.
+- **Seed:** a random starting point. The same experiment with different seeds gives slightly
+  different scores, so each experiment runs several seeds and uses the average.
+- **Noise floor:** how much scores move from luck alone. An experiment only counts as better if
+  it beats the best by more than this.
+- **Validation / test examples:** validation examples are used to compare experiments; test
+  examples are locked away and used once, at the end, for the honest final score.
+
+---
+
+## For engineers
+
+Everything below is reference material; you don't need it to use finetune-kit.
+
+One fine-tuning run varies by several points from seed to seed, so a single "better"
+run proves nothing. finetune-kit compares multi-seed means against a measured noise floor, keeps
+the test set out of reach until the end, and leaves a reviewable file behind at every step. The
+output is a final recipe backed by multi-seed evidence, not a lucky seed.
+
+Runs locally on CUDA, Apple MPS or CPU, one job at a time.
+
+### The CLI
 
 Each step prompt calls `finetune-kit` commands (one JSON object per call) and writes a reviewable
 file, so you can drive the same flow by hand.
@@ -120,7 +273,7 @@ All state is in files, so an interrupted research loop continues from the last k
 `bakeoff`, `space commit`, `lr-scan`, `run`, `wait`, `status`, `compare`, `misses`, `report`,
 `promote`, `models`, `metrics`, `catalog`); `--help` on each shows its options.
 
-## Data formats
+### Data formats
 
 Local files: `.jsonl`, `.csv`, `.tsv` and `.parquet`. CSV and TSV are for sequence classification
 only. JSONL has one object per line.
@@ -169,7 +322,7 @@ Private or gated datasets use your existing Hugging Face login (`hf auth login` 
 
 Rows over the model's max length are truncated and counted; `check-data` warns beforehand.
 
-## Where things live
+### Where things live
 
 - `experiments/NNN-name/`: one folder per experiment. `experiment.yaml` (config),
   `search-space.yaml`, `state.json`, `data-report.json`, `splits/` (train, val, test hash only),
@@ -183,7 +336,7 @@ Rows over the model's max length are truncated and counted; `check-data` warns b
   project. Only the final training (`finetune-kit promote`, run by the `finish` step) reads it. The same directory holds the run queue and
   worker log. Set `FINETUNE_KIT_HOME` to move it.
 
-## The keep rule
+### The keep rule
 
 A run's score is its mean over N seeds. The noise floor sigma is the std of the objective across
 N seeds of the default config, measured once when the experiments start (`start-experiment`). A research run is kept only if its
@@ -194,7 +347,7 @@ non-default keys than the kept one, the verdict is `keep-simpler`. Otherwise it 
 the next idea starts from the last kept config. Ten non-keeps in a row, or an exhausted budget,
 stop the loop. The verdict is computed by `finetune-kit compare` and the worker, never by the agent.
 
-## Metrics, losses and tunables
+### Metrics, losses and tunables
 
 Metrics (`finetune-kit metrics`; each declares its direction and `min_delta`):
 
@@ -221,7 +374,7 @@ Tunable hyperparameters (`finetune-kit catalog EXP` shows them with recommendati
 You choose which are tunable, by name; anything left out stays at the profile default. Hard limits
 exist per hyperparameter and only reject nonsense.
 
-## Model profiles
+### Model profiles
 
 `finetune-kit models` lists them: `ultrabert-150m`, `deberta-v3-base`, `deberta-v3-large`,
 `roberta-base`, `roberta-large`, `modernbert-base`, `modernbert-large`, `bert-base`. A profile pins
@@ -236,7 +389,7 @@ refine it. An entry there for a shipped key overrides only the fields it lists (
 refuses a key that already exists. Remote-code models are allowed only from shipped profiles or
 when you add them explicitly with `--trust-remote-code`.
 
-## Trust and safety
+### Trust and safety
 
 - **Test isolation.** `check-data` moves the test split to the vault outside the project and keeps
   only its hash and row count. Only the final scoring (`promote`, run by `finish`) reads it, once. `misses` reads validation only.
@@ -254,9 +407,7 @@ when you add them explicitly with `--trust-remote-code`.
   `~/.finetune-kit/`. The tamper checks catch edits to protected files at the next `run`, but not
   every state file. Review `results.tsv` and `log.md` as you would any agent's work.
 
-## Known issues
+### Known issues
 
-- The step prompts have not yet been tried in a live agent session (Claude Code, Codex or
-  Cursor); expect rough edges in the conversation flow.
 - `finetune-kit init` prints plain text, not a JSON object like the other commands.
 - Runs are local and sequential; there is no remote GPU queue, web UI or multi-label support.
