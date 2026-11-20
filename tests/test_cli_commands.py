@@ -1206,3 +1206,20 @@ def test_steps_statuses_at_three_points(runner, seq_jsonl, tmp_path):
     assert out["next"]["stage"] == "choose-task"
     assert all(v == "done" for k, v in st.items() if k not in ("status", "compare-models"))
     assert st["status"] == "optional"
+
+
+def test_steps_round_two_keeps_once_only_steps_done(runner, seq_jsonl, tmp_path):
+    assert _new(runner, seq_jsonl).exit_code == 0
+    d = _exp_dir(tmp_path)
+    _splits(d)
+    _space(d)
+    _set_state(d, sigma_obj=0.01, round=1, lr_choice="default", budget_chosen=True)
+    (d / "log.md").write_text("## Summary\n")
+    (d / "report.md").write_text("r")
+    assert runner.invoke(app, ["set", "losses", "001", "focal"]).exit_code == 0
+    out, st = _statuses(runner)
+    assert out["next"]["stage"] == "choose-hyperparameters"
+    assert st["choose-loss"] == "done" and st["choose-hyperparameters"] == "next"
+    assert st["choose-learning-rate"] == "done" and st["choose-experiments"] == "done"
+    assert st["start-experiment"] == "to do" and st["report"] == "to do" and st["finish"] == "to do"
+    assert st["check-data"] == "done" and st["choose-goal"] == "done"

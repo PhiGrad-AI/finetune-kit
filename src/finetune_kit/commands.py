@@ -607,6 +607,8 @@ STEPS = [
     {"step": "report", "title": "Read the report", "what": "See what was tried and what worked best"},
     {"step": "finish", "title": "Finish", "what": "Train and score the final model, then wrap up"},
 ]
+_ANSWERED_ONCE = {"choose-task", "choose-data", "choose-model", "choose-goal", "check-data",
+                  "compare-models", "choose-learning-rate", "choose-experiments"}
 _MORE_ROUND = {"stage": "choose-loss", "reason": "try other losses or settings in another round"}
 
 
@@ -677,9 +679,10 @@ def steps_overview(root: Path, exp_dir: Path | None) -> dict:
     """Every step with its status, plus what `next` says."""
     nxt = next_stage(root, exp_dir)
     name = nxt["experiment"]
-    cfg = None
+    cfg = state = None
     if name is not None:
-        cfg = ex.load(Path(root) / "experiments" / name)[0]
+        cfg, _, state = ex.load(Path(root) / "experiments" / name)
+    started = state is not None and state.sigma_obj is not None
     complete = name is not None and nxt["stage"] == "choose-task"
     order = [s["step"] for s in STEPS]
     cur = order.index(nxt["stage"]) if not complete else len(order)
@@ -697,6 +700,8 @@ def steps_overview(root: Path, exp_dir: Path | None) -> dict:
             status = "optional"
         elif step == "compare-models" and not (cfg is not None and cfg.bakeoff) and step != nxt["stage"]:
             status = "skipped" if cfg is not None and cfg.model is not None else "optional"
+        elif step in _ANSWERED_ONCE and (i < cur or (started and step != nxt["stage"])):
+            status = "done"  # answered once for the whole experiment, so it stays done in later rounds
         elif i < cur:
             status = "done"
         elif i == cur:
